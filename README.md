@@ -1,4 +1,4 @@
-# 🚀 AKS Flex Node Agent
+# 🚀 AKS Flex Node Agent [Work IN Progress]
 
 <div align="center">
 
@@ -13,15 +13,21 @@
 
 ## 📋 Table of Contents
 
-- [🎯 Overview](#-overview)
-- [🏗️ Architecture](#️-architecture)
-- [✨ Key Features](#-key-features)
-- [🔧 Installation](#-installation)
-- [⚙️ Configuration](#️-configuration)
-- [🚀 Usage](#-usage)
-- [🔄 Workflows](#-workflows)
-- [👥 Development](#-development)
-- [📊 Monitoring & Troubleshooting](#-monitoring--troubleshooting)
+- [🚀 AKS Flex Node Agent \[Work IN Progress\]](#-aks-flex-node-agent-work-in-progress)
+  - [📋 Table of Contents](#-table-of-contents)
+  - [🎯 Overview](#-overview)
+    - [🌟 Core Capabilities](#-core-capabilities)
+    - [🔄 System Flow](#-system-flow)
+  - [✨ Key Features](#-key-features)
+    - [🚀 Core Functionality](#-core-functionality)
+    - [🌐 Advanced Networking](#-advanced-networking)
+    - [🛡️ Security \& Authentication](#️-security--authentication)
+  - [🔄 Workflows](#-workflows)
+    - [🚀 Auto-Discovery Workflow](#-auto-discovery-workflow)
+    - [🔐 VPN Setup Flow](#-vpn-setup-flow)
+    - [🏗️ Project Architecture](#️-project-architecture)
+  - [🤝 Contributing](#-contributing)
+  - [📄 License](#-license)
 
 ## 🎯 Overview
 
@@ -56,33 +62,6 @@ graph TD
     F --> F1[💓 Health Checks]
     F --> F2[🔄 Self-Healing]
     F --> F3[📊 Metrics]
-```
-
-## 🏗️ Architecture
-
-### 📁 Project Structure
-
-```
-aks-flex-node/
-├── 🎯 cmd/
-│   └── aks-flex-node/           # 🚀 Main CLI entry point
-├── 📦 pkg/
-│   ├── bootstrap/               # 🔧 Node bootstrap functionality
-│   ├── config/                  # ⚙️ Configuration management
-│   ├── health/                  # 💚 Health checking and monitoring
-│   ├── arc/                     # ☁️ Azure Arc integration
-│   ├── vpn/                     # 🔐 VPN & IP management
-│   ├── cni/                     # 🌐 CNI configuration
-│   ├── auth/                    # 🔑 Authentication
-│   ├── rbac/                    # 👥 RBAC management
-│   ├── state/                   # 💾 State management
-│   └── utils/                   # 🛠️ Utility functions
-├── 🔧 configs/
-│   ├── aks-flex-node.yaml       # 📋 Main configuration
-│   └── systemd/                 # 🔄 Service files
-├── 📦 debian/                   # 🐧 Debian packaging
-├── 🚀 scripts/                  # 📜 Installation scripts
-└── 📚 docs/                     # 📖 Documentation
 ```
 
 ### 🔄 System Flow
@@ -152,168 +131,6 @@ graph LR
 - 🛡️ **Network Security**: Advanced CNI policies and encryption
 - 👥 **RBAC Integration**: Kubernetes role-based access control
 
-## 🔧 Installation
-
-### 📦 Via APT (Recommended)
-
-```bash
-# Update package index
-sudo apt update
-
-# Install AKS Flex Node Agent
-sudo apt install aks-flex-node
-
-# Enable and start service
-sudo systemctl enable aks-flex-node
-sudo systemctl start aks-flex-node
-```
-
-### 🛠️ Manual Installation
-
-```bash
-# Clone and build
-git clone <repository-url>
-cd aks-flex-node
-make build
-
-# Install binary and config
-sudo make install
-
-# Start service
-sudo systemctl start aks-flex-node
-```
-
-### 🐋 Container Deployment
-
-```bash
-# Run as container
-docker run -d \
-  --name aks-flex-node \
-  --privileged \
-  --network host \
-  -v /etc/aks-flex-node:/etc/aks-flex-node:ro \
-  aks-flex-node:latest
-```
-
-## ⚙️ Configuration
-
-### 📋 Main Configuration (`/etc/aks-flex-node/aks-flex-node.yaml`)
-
-```yaml
-# 🎯 Cluster Configuration
-cluster:
-  resourceId: "/subscriptions/xxx/resourceGroups/xxx/providers/Microsoft.ContainerService/managedClusters/xxx"
-  server: "https://xxx.hcp.region.azmk8s.io"
-  caCert: "/etc/kubernetes/certs/ca.crt"
-  clusterDNS: "10.0.0.10"
-  clusterDomain: "cluster.local"
-
-# ☁️ Azure Configuration
-azure:
-  subscriptionId: "xxx"
-  resourceGroup: "xxx"
-  tenantId: "xxx"
-  location: "xxx"
-  arc:
-    enabled: true
-    autoDiscovery: true
-    resourceGroup: "rg-arc-machines"
-
-# 🖥️ Node Configuration
-node:
-  name: ""  # Auto-detected from hostname
-  labels:
-    kubernetes.azure.com/mode: "user"
-    kubernetes.azure.com/role: "agent"
-  maxPods: 110
-  kubelet:
-    evictionHard:
-      memory.available: "100Mi"
-      nodefs.available: "10%"
-    kubeReserved:
-      cpu: "100m"
-      memory: "1Gi"
-
-# 🌐 CNI Configuration
-cni:
-  type: "cilium"
-  version: "1.14.5"
-
-# 📦 Container Runtime
-containerd:
-  version: "1.7.20"
-  pauseImage: "mcr.microsoft.com/oss/kubernetes/pause:3.6"
-
-# ⚙️ Agent Configuration
-agent:
-  logLevel: "info"
-  logFile: "/var/log/aks-flex-node/agent.log"
-  pidFile: "/var/run/aks-flex-node.pid"
-  healthCheckInterval: "30s"
-```
-
-### 🔧 Feature Flags
-
-```yaml
-# 🎛️ Feature Configuration
-features:
-  autoBootstrap: true      # 🚀 Enable automatic bootstrap
-  healthMonitoring: true   # 💚 Enable health monitoring
-  autoRecovery: true       # 🔄 Enable self-healing
-  azureArcIntegration: true # ☁️ Enable Arc integration
-  certRotation: true       # 🔄 Enable certificate rotation
-```
-
-## 🚀 Usage
-
-### 📋 Standard Operations
-
-```bash
-# 🔍 Check service status
-sudo systemctl status aks-flex-node
-
-# 📊 View logs
-sudo journalctl -u aks-flex-node -f
-
-# 🚀 Bootstrap node
-sudo aks-flex-node bootstrap-node
-
-# 🔄 Reset configuration
-sudo aks-flex-node reset
-
-# 💚 Check health
-sudo aks-flex-node status
-
-# ℹ️ Version information
-sudo aks-flex-node version
-```
-
-### 🔐 VPN Operations
-
-```bash
-# 🔑 Generate VPN certificates
-sudo aks-flex-node vpn generate-certs
-
-# 🌉 Bootstrap with VPN
-sudo aks-flex-node bootstrap-vpn --vpn-config /path/to/client.ovpn
-
-# 🌍 Update node IP
-sudo aks-flex-node update-node-ip --interface tun0
-```
-
-### ☁️ Azure Arc Operations
-
-```bash
-# 🔍 Discover clusters
-sudo aks-flex-node arc discover
-
-# 🤝 Auto-connect to cluster
-sudo aks-flex-node arc discover --auto-connect
-
-# 📋 Show Arc status
-sudo aks-flex-node arc status
-```
-
 ## 🔄 Workflows
 
 ### 🚀 Auto-Discovery Workflow
@@ -350,37 +167,6 @@ stateDiagram-v2
     SetupCron --> [*]: ✅ Complete
 ```
 
-## 👥 Development
-
-### 🛠️ Building & Testing
-
-```bash
-# 🏗️ Build the project
-make build
-
-# 🧪 Run tests
-make test
-
-# 📦 Create package
-make package
-
-# 🧹 Clean artifacts
-make clean
-```
-
-### 🔧 Development Environment
-
-```bash
-# 🐳 Start development environment
-docker-compose up -d
-
-# 🔧 Install dependencies
-go mod download
-
-# 🚀 Run in development mode
-go run ./cmd/aks-flex-node daemon --config configs/aks-flex-node.yaml
-```
-
 ### 🏗️ Project Architecture
 
 ```mermaid
@@ -405,60 +191,6 @@ graph TD
     style Arc fill:#e8f5e8
     style VPN fill:#fff3e0
 ```
-
-## 📊 Monitoring & Troubleshooting
-
-### 📈 Metrics & Monitoring
-
-```bash
-# 📊 View health metrics
-curl http://localhost:8080/metrics
-
-# 💚 Check component health
-sudo aks-flex-node status --json
-
-# 📋 View detailed logs
-sudo tail -f /var/log/aks-flex-node/agent.log
-```
-
-### 🔍 Common Issues & Solutions
-
-| Issue | Symptoms | Solution |
-|-------|----------|----------|
-| 🚫 **Build Errors** | Compilation fails | Ensure Go 1.21+ installed |
-| 🔑 **VPN Certificate** | Connection timeout | Verify certificate format |
-| 🌐 **CNI Problems** | Network policies fail | Check Cilium installation |
-| ☁️ **Arc Discovery** | No clusters found | Verify Arc registration |
-| 🤝 **Node Registration** | Join cluster fails | Check token and connectivity |
-
-### 🐛 Debug Mode
-
-```bash
-# 🔍 Run with debug logging
-sudo aks-flex-node daemon --log-level debug
-
-# 📊 Health check with details
-sudo aks-flex-node status --verbose
-
-# 🔍 Check configuration
-sudo aks-flex-node config validate
-```
-
-### 📋 Log Locations
-
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| 🔄 **Systemd** | `journalctl -u aks-flex-node` | Service logs |
-| 📝 **Agent Log** | `/var/log/aks-flex-node/agent.log` | Application logs |
-| 🌐 **CNI Logs** | `/var/log/cni/` | Network logs |
-| 🔐 **VPN Logs** | `/var/log/openvpn/` | VPN connection logs |
-
-## 🛡️ Security Considerations
-
-- 🔐 **Root Privileges**: Required for system configuration
-- 🔑 **Certificate Storage**: Secure storage with proper permissions
-- 🎫 **Token Management**: Azure Arc tokens handled securely
-- 🌐 **Network Security**: CNI policies and encryption enabled
 
 ## 🤝 Contributing
 
