@@ -1,0 +1,35 @@
+#!/bin/bash
+set -e
+
+# postrm script for aks-flex-node
+
+case "$1" in
+    purge)
+        # Remove systemd service files
+        systemctl daemon-reload
+
+        # Remove user and group
+        if getent passwd aks-flex-node >/dev/null; then
+            deluser --system aks-flex-node || true
+        fi
+
+        # Remove data and log directories (but preserve logs)
+        rm -rf /var/lib/aks-flex-node
+
+        echo "AKS Flex Node has been purged."
+        echo "Configuration files in /etc/aks-flex-node have been preserved."
+        echo "Log files in /var/log/aks-flex-node have been preserved."
+        ;;
+
+    remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        ;;
+
+    *)
+        echo "postrm called with unknown argument \`$1'" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

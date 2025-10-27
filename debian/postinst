@@ -1,0 +1,42 @@
+#!/bin/bash
+set -e
+
+# postinst script for aks-flex-node
+
+case "$1" in
+    configure)
+        # Create system user if it doesn't exist
+        if ! getent passwd aks-flex-node >/dev/null; then
+            adduser --system --group --home /var/lib/aks-flex-node \
+                --no-create-home --disabled-login \
+                --gecos "AKS Flex Node" aks-flex-node
+        fi
+
+        # Set ownership and permissions
+        chown -R root:root /etc/aks-flex-node
+        chmod 644 /etc/aks-flex-node/aks-flex-node.yaml
+
+        chown -R aks-flex-node:aks-flex-node /var/lib/aks-flex-node
+        chown -R aks-flex-node:aks-flex-node /var/log/aks-flex-node
+
+        # Enable systemd service
+        systemctl daemon-reload
+        systemctl enable aks-flex-node.service
+
+        echo "AKS Flex Node has been installed."
+        echo "To configure the agent, edit /etc/aks-flex-node/aks-flex-node.yaml"
+        echo "Then start the service with: systemctl start aks-flex-node"
+        ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+
+    *)
+        echo "postinst called with unknown argument \`$1'" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

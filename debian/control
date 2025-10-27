@@ -1,0 +1,28 @@
+Source: aks-flex-node
+Section: admin
+Priority: optional
+Maintainer: AKS Team <aks-team@microsoft.com>
+Build-Depends: debhelper-compat (= 13), golang-go (>= 1.21)
+Standards-Version: 4.6.0
+Homepage: https://github.com/Azure/aks-one
+Vcs-Git: https://github.com/Azure/aks-one.git
+Vcs-Browser: https://github.com/Azure/aks-one
+
+Package: aks-flex-node
+Architecture: amd64
+Depends: ${misc:Depends}, systemd, curl, jq
+Recommends: docker.io | containerd
+Suggests: kubectl
+Description: AKS Flex Node Agent
+ The AKS Flex Node Agent automates the deployment, configuration,
+ and management of Azure Kubernetes Service (AKS) edge nodes.
+ .
+ Key features:
+  - Automated node bootstrap and configuration
+  - Azure Arc integration
+  - Health monitoring and self-healing
+  - Kubernetes component management
+  - Systemd service integration
+ .
+ This package provides a systemd service that can be installed via
+ apt and managed like any other system service.

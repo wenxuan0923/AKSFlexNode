@@ -1,0 +1,30 @@
+#!/bin/bash
+set -e
+
+# prerm script for aks-flex-node
+
+case "$1" in
+    remove|upgrade|deconfigure)
+        # Stop the service
+        if systemctl is-active --quiet aks-flex-node.service; then
+            systemctl stop aks-flex-node.service
+        fi
+
+        # Disable the service
+        if systemctl is-enabled --quiet aks-flex-node.service; then
+            systemctl disable aks-flex-node.service
+        fi
+        ;;
+
+    failed-upgrade)
+        ;;
+
+    *)
+        echo "prerm called with unknown argument \`$1'" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

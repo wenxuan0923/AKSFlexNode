@@ -1,0 +1,63 @@
+[Unit]
+Description=AKS Flex Node Agent - Connect non-Azure VMs to AKS clusters
+Documentation=https://github.com/Azure/aks-one
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/usr/bin/aks-flex-node
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+Group=root
+
+# Complete AKS node setup workflow
+ExecStart=/bin/bash -c 'echo "Starting AKS Flex Node setup..." && \
+    /usr/bin/aks-flex-node arc register --config /etc/aks-flex-node/config.yaml && \
+    /usr/bin/aks-flex-node bootstrap-vpn --auto-provision --config /etc/aks-flex-node/config.yaml && \
+    /usr/bin/aks-flex-node bootstrap-node --config /etc/aks-flex-node/config.yaml && \
+    echo "AKS Flex Node setup completed successfully!"'
+
+# Reset on stop
+ExecStop=/usr/bin/aks-flex-node reset --force --config /etc/aks-flex-node/config.yaml
+
+# Timeouts
+TimeoutStartSec=1800
+TimeoutStopSec=300
+
+# Security settings - Need elevated privileges for VPN, Arc, and Kubernetes operations
+NoNewPrivileges=false
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_DAC_OVERRIDE CAP_SETUID CAP_SETGID
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_DAC_OVERRIDE
+
+# File system settings
+ProtectSystem=false
+ProtectHome=false
+ReadWritePaths=/var/lib/aks-flex-node /var/log/aks-flex-node /etc/aks-flex-node /etc/kubernetes /var/lib/kubelet /run/containerd /tmp /opt
+PrivateTmp=false
+ProtectKernelTunables=false
+ProtectControlGroups=false
+RestrictSUIDSGID=false
+RestrictRealtime=false
+LockPersonality=false
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=8192
+LimitMEMLOCK=infinity
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aks-flex-node
+
+# Environment
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=/root
+Environment=KUBECONFIG=/etc/kubernetes/admin.conf
+
+# Working directory
+WorkingDirectory=/var/lib/aks-flex-node
+
+[Install]
+WantedBy=multi-user.target

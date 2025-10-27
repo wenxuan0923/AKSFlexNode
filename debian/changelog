@@ -1,0 +1,10 @@
+aks-flex-node (1.0.0-1) unstable; urgency=medium
+
+  * Initial release of AKS Flex Node Agent
+  * Automated node bootstrap and configuration
+  * Azure Arc integration
+  * Health monitoring and self-healing capabilities
+  * Kubernetes component management
+  * Systemd service integration
+
+ -- AKS Team <aks-team@microsoft.com>  Mon, 21 Oct 2024 00:00:00 +0000

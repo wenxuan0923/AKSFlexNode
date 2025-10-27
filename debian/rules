@@ -1,0 +1,48 @@
+#!/usr/bin/make -f
+
+# Uncomment this to turn on verbose mode.
+#export DH_VERBOSE=1
+
+export GO111MODULE=on
+export CGO_ENABLED=0
+export GOPATH=$(CURDIR)/go
+
+VERSION := $(shell dpkg-parsechangelog -SVersion | cut -d- -f1)
+BUILD_DATE := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+
+LDFLAGS := -X main.version=$(VERSION) \
+           -X main.buildDate=$(BUILD_DATE) \
+           -X main.gitCommit=$(GIT_COMMIT) \
+           -w -s
+
+%:
+	dh $@ --builddirectory=build
+
+override_dh_auto_build:
+	mkdir -p $(GOPATH)/src/go.goms.io/aks
+	ln -sf $(CURDIR) $(GOPATH)/src/go.goms.io/aks/AKSFlexNode
+	cd $(GOPATH)/src/go.goms.io/aks/AKSFlexNode && \
+		go build -ldflags "$(LDFLAGS)" -o build/aks-flex-node ./cmd/aks-flex-node
+
+override_dh_auto_test:
+	cd $(GOPATH)/src/go.goms.io/aks/AKSFlexNode && \
+		go test -v ./...
+
+override_dh_auto_install:
+	# Install binary
+	install -D -m 0755 build/aks-flex-node debian/aks-flex-node/usr/bin/aks-flex-node
+
+	# Install configuration
+	install -D -m 0644 configs/aks-flex-node.yaml debian/aks-flex-node/etc/aks-flex-node/aks-flex-node.yaml
+
+	# Install systemd service
+	install -D -m 0644 configs/systemd/aks-flex-node.service debian/aks-flex-node/lib/systemd/system/aks-flex-node.service
+
+	# Create directories
+	install -d -m 0755 debian/aks-flex-node/var/lib/aks-flex-node
+	install -d -m 0755 debian/aks-flex-node/var/log/aks-flex-node
+
+override_dh_auto_clean:
+	rm -rf $(GOPATH)
+	rm -rf build

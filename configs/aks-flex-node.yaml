@@ -1,0 +1,52 @@
+azure:
+  subscriptionId: "8ecadfc9-d1a3-4ea4-b844-0d9f87e4d7c8"
+  tenantId: "72f988bf-86f1-41af-91ab-2d7cd011db47"
+  location: "eastus"
+  resourceGroup: "wenx-rg"
+  arc:
+    autoRegister: true
+    targetCluster:
+      name: "wenx-edge-cluster"
+      # resourceGroup: "" // only needed if different from the above resourceGroup
+  vpn:
+    enabled: true
+    autoProvision: true
+    p2sGatewayCIDR: "192.168.100.0/24"    # VPN client address pool
+    gatewaySKU: "VpnGw2AZ"
+
+node:
+  labels:
+    node-type: "edge"
+    location: "edge-site-1"
+
+agent:
+  logLevel: "info"
+  logFile: "/var/log/aks-flex-node/agent.log"
+
+paths:
+  configDir: "/etc/aks-flex-node"
+  dataDir: "/var/lib/aks-flex-node"
+  logDir: "/var/log/aks-flex-node"
+  kubernetes:
+    configDir: "/etc/kubernetes"
+    certsDir: "/etc/kubernetes/certs"
+    manifestsDir: "/etc/kubernetes/manifests"
+    volumePluginDir: "/etc/kubernetes/volumeplugins"
+    kubeletDir: "/var/lib/kubelet"
+  cni:
+    binDir: "/opt/cni/bin"
+    confDir: "/etc/cni/net.d"
+    libDir: "/var/lib/cni"
+
+containerd:
+  version: "1.7.20"
+  pauseImage: "mcr.microsoft.com/oss/kubernetes/pause:3.6"
+  metricsAddress: "0.0.0.0:10257"
+
+kubernetes:
+  version: "1.32.7"
+  urlTemplate: "https://acs-mirror.azureedge.net/kubernetes/v%s/binaries/kubernetes-node-linux-%s.tar.gz"
+
+runc:
+  version: "1.1.12"
+  url: "https://github.com/opencontainers/runc/releases/download/v1.1.12/runc.amd64"
