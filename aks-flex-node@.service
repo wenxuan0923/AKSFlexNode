@@ -1,0 +1,44 @@
+[Unit]
+Description=AKS Flex Node Agent - %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/aks-flex-node %i --config /etc/aks-flex-node/config.json
+TimeoutStartSec=7200
+TimeoutStopSec=3600
+User=aks-flex-node
+Group=aks-flex-node
+SupplementaryGroups=himds ubuntu
+Environment=AZURE_CONFIG_DIR=/home/ubuntu/.azure
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening (runs as non-root user with sudo access for Arc installation)
+# Disabled AmbientCapabilities to allow sudo execution
+# AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_DAC_OVERRIDE CAP_SYS_ADMIN
+NoNewPrivileges=false
+ProtectSystem=false
+ProtectHome=false
+PrivateTmp=false
+PrivateDevices=false
+ProtectHostname=false
+ProtectClock=false
+ProtectKernelTunables=false
+ProtectKernelModules=false
+ProtectKernelLogs=false
+ProtectControlGroups=false
+RestrictNamespaces=false
+LockPersonality=false
+MemoryDenyWriteExecute=false
+RestrictRealtime=false
+RestrictSUIDSGID=false
+RemoveIPC=false
+
+# Allow access to specific paths that need modification (- prefix makes paths optional)
+ReadWritePaths=-/etc/kubernetes -/var/lib/kubelet -/var/lib/containerd -/etc/containerd -/opt/cni -/etc/cni -/etc/systemd/system -/etc/sysctl.d -/etc/modules-load.d -/var/log/aks-flex-node -/tmp
+
+[Install]
+WantedBy=multi-user.target

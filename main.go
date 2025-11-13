@@ -1,0 +1,73 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/spf13/cobra"
+
+	"go.goms.io/aks/AKSFlexNode/pkg/config"
+	"go.goms.io/aks/AKSFlexNode/pkg/logger"
+)
+
+var (
+	configPath string
+)
+
+func main() {
+	rootCmd := &cobra.Command{
+		Use:   "aks-flex-node",
+		Short: "AKS Flex Node Agent",
+		Long:  "Azure Kubernetes Service Flex Node Agent for edge computing scenarios",
+	}
+
+	// Add global flags
+	rootCmd.PersistentFlags().StringVar(&configPath, "config", "", "Path to configuration file")
+
+	// Add commands
+	rootCmd.AddCommand(NewBootstrapCommand())
+	rootCmd.AddCommand(NewUnbootstrapCommand())
+	rootCmd.AddCommand(NewVersionCommand())
+
+	// Set up context with signal handling
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handle shutdown signals
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		// Use a basic logger for shutdown signal since context may not be available
+		fmt.Println("Received shutdown signal, cancelling operations...")
+		cancel()
+	}()
+
+	// Set up persistent pre-run to initialize config and logger
+	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		// Skip config loading for version command
+		if cmd.Name() == "version" {
+			return nil
+		}
+
+		// Load config if specified
+		cfg, err := config.LoadConfig(configPath)
+		if err != nil {
+			return fmt.Errorf("failed to load config from %s: %w", configPath, err)
+		}
+
+		// Setup logger and update context
+		ctx := logger.SetupLogger(cmd.Context(), cfg.Agent.LogLevel, cfg.Agent.LogDir)
+		cmd.SetContext(ctx)
+		return nil
+	}
+
+	// Execute command with context
+	if err := rootCmd.ExecuteContext(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "Command execution failed: %v\n", err)
+		os.Exit(1)
+	}
+}
