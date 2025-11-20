@@ -64,32 +64,20 @@ sequenceDiagram
     - **RBAC Assignment:** `User Access Administrator` or `Owner` role on the AKS cluster to assign roles to the Arc managed identity
     - **AKS Access:** `Azure Kubernetes Service Cluster Admin Role` on the target AKS cluster
 
-### 1. Prepare Azure Authentication
-No manual login required - the bootstrap process will automatically prompt for Azure authentication when needed if you haven't already logged in or if your token has expired.
+### 1. Installation
 
-### 2. Build and Install
 ```bash
-# Clone the repository
-git clone <repository-url>
-cd AKSFlexNode
+# Install aks-flex-node
+curl -fsSL https://raw.githubusercontent.com/Azure/AKSFlexNode/main/scripts/install.sh | sudo bash
 
-# Build using Makefile (recommended)
-make build
-
-# Or build directly with Go
-go build .
-
-# Install system-wide
-sudo cp aks-flex-node /usr/local/bin/
+# Verify installation
+aks-flex-node version
 ```
 
-### 3. Configure
+### 2. Configure
 Create the configuration directory and file:
 
 ```bash
-# Create configuration directory
-sudo mkdir -p /etc/aks-flex-node
-
 # Create configuration file
 sudo tee /etc/aks-flex-node/config.json > /dev/null << 'EOF'
 {
@@ -128,52 +116,50 @@ EOF
 - `your-resource-group`: Resource group where Arc machine and AKS cluster are located
 - `your-cluster`: Your AKS cluster name
 
-### 4. Verify Configuration
+
+### 3. Usage
+
+#### Available Commands
+
+| Command | Description | Usage |
+|---------|-------------|-------|
+| `bootstrap` | Transform VM into AKS node | `sudo aks-flex-node bootstrap` |
+| `unbootstrap` | Clean removal of all components | `sudo aks-flex-node unbootstrap` |
+| `version` | Show version information | `sudo aks-flex-node version` |
+
+#### Bootstrap
 ```bash
-# Test the configuration file syntax
-aks-flex-node version
+# Option 1: Direct command execution
+aks-flex-node bootstrap
+cat /var/log/aks-flex-node/aks-flex-node.log
+
+# Option 2: Using systemd service
+sudo systemctl enable aks-flex-node@bootstrap.service; sudo systemctl start aks-flex-node@bootstrap
+journalctl -u aks-flex-node@bootstrap --since "1 minutes ago" -f
 
 ```
 
-### 5. Bootstrap the Node
+#### Unbootstrap
 ```bash
-# Transform your VM into an AKS node
-aks-flex-node bootstrap --config /etc/aks-flex-node/config.json
+# Option 1: Direct command execution
+aks-flex-node unbootstrap
+cat /var/log/aks-flex-node/aks-flex-node.log
+
+# Option 2: Using systemd service
+sudo systemctl enable aks-flex-node@unbootstrap.service; sudo systemctl start aks-flex-node@unbootstrap
+journalctl -u aks-flex-node@unbootstrap --since "1 minutes ago" -f
+
 ```
 
-### 6. Verify Installation
-```bash
-# Check if the node has joined the cluster
-kubectl get nodes
+## Authentication Flow:
 
-# Verify Arc registration
-az connectedmachine list --resource-group your-resource-group
-```
-
-## Usage Modes
-
-### 🛠️ Development Mode
-**Best for:** Testing, development, and one-off deployments
-**Authentication:** Uses Azure CLI credentials with interactive login prompts when needed
-
-```bash
-# Bootstrap with explicit config path (uses Azure CLI credentials)
-aks-flex-node bootstrap --config /etc/aks-flex-node/config.json
-
-# Clean removal of all components
-aks-flex-node unbootstrap --config /etc/aks-flex-node/config.json
-```
-
-**Authentication Flow:**
-- If you haven't run `az login` or your token is expired, the bootstrap process will automatically prompt you to login interactively (if Service Pinciple isn't configured)
+### CLI Credential:
+When Service Pinciple isn't configured, the service will use az login credential for arc related operations, e.g. joining the VM to Azure as an ARC machine. If you haven't run `az login` or your token is expired, the bootstrap process will automatically prompt you to login interactively
 - The login prompt will appear in your terminal with device code authentication when needed
 - Once authenticated, the service will use your Azure CLI credentials for operations like arc join and role assignments
 
-### 🏭 Production Mode
-**Best for:** Automated deployments and production environments
-**Authentication:** Service principal credentials in config file
-
-Add service principal credentials to your config file:
+### Service Principle:
+Alternatively, configure a service principal by adding the following to the config file:
 ```json
 {
   "azure": {
@@ -183,52 +169,58 @@ Add service principal credentials to your config file:
       "clientId": "your-service-principal-client-id",
       "clientSecret": "your-service-principal-client-secret"
     },
-    "cloud": "AzurePublicCloud",
     // ... rest of config
   }
 }
 ```
 
-**Service Principal Permissions:**
 The service principal must have the same permissions listed in the Prerequisites section:
 - `Azure Connected Machine Onboarding` role on the resource group
 - `User Access Administrator` or `Owner` role on the AKS cluster
 - `Azure Kubernetes Service Cluster Admin Role` on the target AKS cluster
 
+## Uninstallation
+
+### Complete Removal
 ```bash
-# Install and enable systemd services
-sudo ./AKSFlexNode/install-service.sh
+# First run unbootstrap to cleanly disconnect from Arc and AKS cluster
+aks-flex-node unbootstrap
 
-sudo systemctl enable aks-flex-node@bootstrap.service
-sudo systemctl start aks-flex-node@bootstrap.service
-
-# Monitor bootstrap progress
-sudo systemctl status aks-flex-node@bootstrap.service
-sudo journalctl -u aks-flex-node@bootstrap -f
-
-# Uninstall (and unbootstrap node)
-sudo ./AKSFlexNode/uninstall-service.sh
+# Then run automated uninstall to remove all components
+curl -fsSL https://raw.githubusercontent.com/Azure/AKSFlexNode/main/scripts/uninstall.sh | sudo bash
 ```
 
-## Available Commands
+The uninstall script will:
+- Stop and disable aks-flex-node systemd services (bootstrap/unbootstrap)
+- Remove the service user and permissions
+- Clean up all directories and configuration files
+- Remove the binary and systemd service files
 
-| Command | Description | Usage |
-|---------|-------------|-------|
-| `bootstrap` | Transform VM into AKS node | `sudo aks-flex-node bootstrap` |
-| `unbootstrap` | Clean removal of all components | `sudo aks-flex-node unbootstrap` |
-| `version` | Show version information | `sudo aks-flex-node version` |
+### Force Uninstall (Non-interactive)
+```bash
+# For automated environments where confirmation prompts should be skipped
+curl -fsSL https://raw.githubusercontent.com/Azure/AKSFlexNode/main/scripts/uninstall.sh | sudo bash -s -- --force
+```
 
-## Build Targets
+**⚠️ Important Notes:**
+- Run `aks-flex-node unbootstrap` first to properly disconnect from Arc and clean up Azure resources
+- The uninstall script will NOT disconnect from Arc - this ensures proper cleanup order
+- The Azure Arc agent remains installed but can be removed manually if not needed
+- Backup any important data before uninstalling
 
-The project includes a Makefile with essential build targets:
+## Building from Source
+
+For developers who want to build from source:
 
 ```bash
 # Build the application
 make build
 
-# Show build metadata (date and git commit)
-make update-build-metadata
+# Run tests
+make test
 ```
+
+For a complete list of build targets, run `make help`.
 
 ## System Requirements
 

@@ -4,10 +4,10 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
+Type=simple
+RemainAfterExit=no
 ExecStart=/usr/local/bin/aks-flex-node %i --config /etc/aks-flex-node/config.json
-TimeoutStartSec=7200
+TimeoutStartSec=30
 TimeoutStopSec=3600
 User=aks-flex-node
 Group=aks-flex-node

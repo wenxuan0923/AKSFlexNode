@@ -3,7 +3,6 @@ package arc
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -49,13 +48,13 @@ func (i *Installer) Execute(ctx context.Context) error {
 		return fmt.Errorf("Arc bootstrap setup failed at authentication: %w", err)
 	}
 
-	// Step 1: Install Arc agent
-	i.logger.Info("Step 1: Installing Arc agent")
-	if err := i.installArcAgent(ctx); err != nil {
-		i.logger.Errorf("Failed to install Arc agent: %v", err)
-		return fmt.Errorf("Arc bootstrap setup failed at agent installation: %w", err)
+	// Step 1: Validate Arc agent is available
+	i.logger.Info("Step 1: Validating Arc agent availability")
+	if err := i.validateArcAgent(ctx); err != nil {
+		i.logger.Errorf("Arc agent validation failed: %v", err)
+		return fmt.Errorf("Arc bootstrap setup failed at agent validation: %w", err)
 	}
-	i.logger.Info("Successfully installed Arc agent")
+	i.logger.Info("Arc agent validation successful")
 
 	// Step 2: Register Arc machine with Azure
 	i.logger.Info("Step 2: Registering Arc machine with Azure")
@@ -124,139 +123,13 @@ func (i *Installer) IsCompleted(ctx context.Context) bool {
 	return true
 }
 
-// installArcAgent installs the Azure Arc agent on the system
-func (i *Installer) installArcAgent(ctx context.Context) error {
-	i.logger.Info("Installing Azure Arc agent")
-
-	// Check if Arc agent is already installed and working
-	if isArcAgentInstalled() {
-		i.logger.Info("Azure Arc agent is already installed")
-		return nil
-	}
-
-	// Remove any existing broken azcmagent package to start fresh
-	i.logger.Info("Removing any existing broken Arc agent package...")
-	if err := i.cleanUpARCAgent(); err != nil {
-		i.logger.Debugf("No existing azcmagent package to remove (or removal failed): %v", err)
-	}
-
-	// Install prerequisites and Arc agent
-	if err := i.installPrerequisites(); err != nil {
-		return fmt.Errorf("failed to install prerequisites: %w", err)
-	}
-
-	// Download and prepare installation script
-	scriptPath, err := i.downloadArcAgentScript()
-	if err != nil {
-		return fmt.Errorf("failed to download Arc agent script: %w", err)
-	}
-	// Clean up tmp script after installation
-	defer func() {
-		if err := utils.RunCleanupCommand(scriptPath); err != nil {
-			logrus.Warnf("Failed to clean up temp file %s: %v", scriptPath, err)
-		}
-	}()
-
-	if err := i.runArcAgentInstallation(scriptPath); err != nil {
-		return fmt.Errorf("failed to run Arc agent installation: %w", err)
-	}
-
-	i.logger.Info("Azure Arc agent verification successful")
-	return nil
-}
-
-// downloadArcAgentScript downloads and prepares the Arc agent installation script
-func (i *Installer) downloadArcAgentScript() (string, error) {
-	if utils.FileExists(arcAgentTmpScriptPath) {
-		i.logger.Infof("Arc agent installation script already exists at %s, skipping download", arcAgentTmpScriptPath)
-		return arcAgentTmpScriptPath, nil
-	}
-
-	i.logger.Infof("Downloading Arc agent installation script from %s into tmp path %q",
-		arcAgentScriptURL, arcAgentTmpScriptPath)
-
-	wgetArgs := []string{
-		"--timeout=30",           // 30 second timeout
-		"--tries=3",              // Try up to 3 times
-		"--waitretry=2",          // Wait 2 seconds between retries
-		"--no-check-certificate", // Skip certificate validation (common in bootstrap environments)
-		arcAgentScriptURL,
-		"-O", arcAgentTmpScriptPath,
-	}
-
-	if err := utils.RunSystemCommand("wget", wgetArgs...); err != nil {
-		return "", fmt.Errorf("failed to download Arc agent script with wget: %w", err)
-	}
-
-	// Add a small delay to ensure file system operations are completed
-	time.Sleep(100 * time.Millisecond)
-
-	// Verify the downloaded file exists and has content
-	if !utils.FileExists(arcAgentTmpScriptPath) {
-		return "", fmt.Errorf("Arc agent script file was not created at %s", arcAgentTmpScriptPath)
-	}
-
-	// Make script executable
-	if err := utils.RunSystemCommand("chmod", "755", arcAgentTmpScriptPath); err != nil {
-		return "", fmt.Errorf("failed to make script executable: %w", err)
-	}
-
-	i.logger.Info("Arc agent installation script downloaded and prepared successfully")
-	return arcAgentTmpScriptPath, nil
-}
-
-// runArcAgentInstallation executes the Arc agent installation script with proper verification
-func (i *Installer) runArcAgentInstallation(scriptPath string) error {
-	i.logger.Infof("Running Arc agent installation script from %s", scriptPath)
-
-	// Run the installation script and capture output for debugging
-	output, err := utils.RunCommandWithOutput("bash", scriptPath)
-	if err != nil {
-		i.logger.Errorf("Arc agent installation script failed with output: %s", output)
-		return fmt.Errorf("Arc agent installation script failed: %w", err)
-	}
-	i.logger.Info("Arc agent installation script completed successfully")
-
-	// Verify installation was successful by checking if azcmagent is now available
-	i.logger.Info("Verifying Arc agent binary is accessible...")
+// validateArcAgent ensures Arc agent is available (should be installed by install.sh)
+func (i *Installer) validateArcAgent(ctx context.Context) error {
 	if !isArcAgentInstalled() {
-		i.logger.Info("Arc agent not found in PATH, checking common installation locations...")
-
-		// Check common installation paths
-		var foundPath string
-		for _, path := range arcPaths {
-			i.logger.Infof("Checking for Arc agent at: %s", path)
-			if _, statErr := os.Stat(path); statErr == nil {
-				i.logger.Infof("Found Arc agent at: %s", path)
-				foundPath = path
-				break
-			} else {
-				i.logger.Infof("Arc agent not found at %s: %v", path, statErr)
-			}
-		}
-
-		if foundPath != "" {
-			// Automatically create symlink to make azcmagent available in PATH
-			i.logger.Infof("Creating symlink to make Arc agent available in PATH")
-			if err := i.createArcAgentSymlink(foundPath); err != nil {
-				return fmt.Errorf("Arc agent installed at %s but failed to create PATH symlink: %w", foundPath, err)
-			}
-		} else {
-			return fmt.Errorf("Arc agent installation script completed but azcmagent binary is not available in PATH or common locations (%v). The installation may have failed or been corrupted", arcPaths)
-		}
+		return fmt.Errorf("Azure Arc agent not found - please run the installation script first:\n" +
+			"curl -fsSL https://raw.githubusercontent.com/Azure/AKSFlexNode/main/scripts/install.sh | bash")
 	}
-
-	i.logger.Info("Arc agent binary verification successful")
-	return nil
-}
-
-// createArcAgentSymlink creates a symlink for azcmagent to make it available in PATH
-func (i *Installer) createArcAgentSymlink(sourcePath string) error {
-	i.logger.Infof("Arc agent found at %s, creating symlink to %s", sourcePath, arcBinaryPath)
-	if err := utils.RunSystemCommand("ln", "-sf", sourcePath, arcBinaryPath); err != nil {
-		return fmt.Errorf("Arc agent installed at %s but not in PATH. Failed to create symlink: %v. Please manually run: sudo ln -sf %s /usr/local/bin/azcmagent", sourcePath, err, sourcePath)
-	}
-	i.logger.Info("Successfully created symlink for azcmagent")
+	i.logger.Info("Azure Arc agent found and ready")
 	return nil
 }
 
@@ -522,23 +395,6 @@ func (i *Installer) pollForPermissions(ctx context.Context, managedIdentityID st
 			i.logger.Info("⏳ Some permissions are still missing, will check again in 30 seconds...")
 		}
 	}
-}
-
-// installPrerequisites installs required packages for Arc agent
-func (i *Installer) installPrerequisites() error {
-	packages := []string{"curl", "wget", "gnupg", "lsb-release", "jq", "net-tools"}
-
-	// apt-get for Ubuntu/Debian
-	if err := utils.RunSystemCommand("apt-get", "update"); err == nil {
-		for _, pkg := range packages {
-			if err := utils.RunSystemCommand("apt-get", "install", "-y", pkg); err != nil {
-				i.logger.Warnf("Failed to install %s via apt-get: %v", pkg, err)
-			}
-		}
-		return nil
-	}
-
-	return fmt.Errorf("unable to install prerequisites - no supported package manager found")
 }
 
 // addAuthenticationArgs adds appropriate authentication parameters to the azcmagent command

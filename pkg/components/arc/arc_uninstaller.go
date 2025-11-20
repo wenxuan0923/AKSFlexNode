@@ -9,8 +9,6 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/authorization/armauthorization/v3"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/hybridcompute/armhybridcompute"
 	"github.com/sirupsen/logrus"
-
-	"go.goms.io/aks/AKSFlexNode/pkg/utils"
 )
 
 // UnInstaller handles Azure Arc cleanup operations
@@ -27,7 +25,7 @@ func NewUnInstaller(logger *logrus.Logger) *UnInstaller {
 
 // GetName returns the cleanup step name
 func (u *UnInstaller) GetName() string {
-	return "ArcExecute"
+	return "ArcUnbootstrap"
 }
 
 // Execute performs Arc cleanup as part of the unbootstrap process
@@ -67,13 +65,13 @@ func (u *UnInstaller) Execute(ctx context.Context) error {
 		u.logger.Info("Successfully unregistered Arc machine from Azure")
 	}
 
-	// Step 3: Execute Arc agent from local system
-	u.logger.Info("Step 3: Executeing Arc agent from local system")
-	if err := u.UninstallArcAgent(ctx); err != nil {
-		u.logger.Warnf("Failed to Execute Arc agent (continuing cleanup): %v", err)
-		failedOperations = append(failedOperations, "Arc agent Executeation")
+	// Step 3: Disconnect Arc machine (but preserve Arc agent installation)
+	u.logger.Info("Step 3: Disconnecting Arc machine from Azure (preserving Arc agent)")
+	if err := u.disconnectArcMachine(ctx); err != nil {
+		u.logger.Warnf("Failed to disconnect Arc machine (continuing cleanup): %v", err)
+		failedOperations = append(failedOperations, "Arc machine disconnection")
 	} else {
-		u.logger.Info("Successfully Executeed Arc agent")
+		u.logger.Info("Successfully disconnected Arc machine from Azure")
 	}
 
 	// Report results
@@ -85,35 +83,6 @@ func (u *UnInstaller) Execute(ctx context.Context) error {
 	}
 
 	u.logger.Info("Arc cleanup for unbootstrap completed successfully")
-	return nil
-}
-
-// UninstallArcAgent removes the Azure Arc agent from the system
-func (u *UnInstaller) UninstallArcAgent(ctx context.Context) error {
-	u.logger.Info("Executeing Azure Arc agent")
-
-	// Check if azcmagent is Executeed
-	if _, err := exec.LookPath("azcmagent"); err != nil {
-		u.logger.Info("Azure Arc agent is not Executeed or not in PATH")
-		return nil
-	}
-
-	// Try to disconnect the machine first (if connected)
-	if err := u.disconnectArcMachine(ctx); err != nil {
-		u.logger.Errorf("Failed to disconnect Arc machine (continuing with Execute): %v", err)
-	}
-
-	// Stop Arc agent services
-	if err := u.stopArcServices(); err != nil {
-		u.logger.Warnf("Failed to stop Arc services (continuing with Execute): %v", err)
-	}
-
-	// Remove Arc agent
-	if err := u.cleanUpARCAgent(); err != nil {
-		u.logger.Debugf("No existing azcmagent package to remove (or removal failed): %v", err)
-	}
-
-	u.logger.Info("Azure Arc agent Executeation completed")
 	return nil
 }
 
@@ -186,43 +155,19 @@ func (u *UnInstaller) removeRBACRoles(ctx context.Context, arcMachine *armhybrid
 
 // IsCompleted checks if Arc cleanup has been completed
 // This can be used by unbootstrap steps to verify completion status
+// Note: In the new architecture, Arc agent remains installed but machine should be disconnected
 func (u *UnInstaller) IsCompleted(ctx context.Context) bool {
 	u.logger.Debug("Checking Arc cleanup completion status")
 
-	for _, path := range arcPaths {
-		if utils.FileExists(path) {
-			u.logger.Debugf("Arc agent still found at: %s", path)
-			return false
-		}
-	}
-
-	// Check if Arc services are still running
-	if isArcServicesRunning() {
-		u.logger.Debug("Arc services are still running")
+	// Check if Arc machine is still registered with Azure
+	// This is the main indicator that cleanup is complete in the new architecture
+	if _, err := u.getArcMachine(ctx); err == nil {
+		u.logger.Debug("Arc machine is still registered with Azure")
 		return false
 	}
 
-	u.logger.Debug("Arc cleanup appears to be completed")
+	u.logger.Debug("Arc cleanup appears to be completed (machine disconnected, agent preserved)")
 	return true
-}
-
-// stopArcServices stops all Arc-related services
-func (u *UnInstaller) stopArcServices() error {
-	u.logger.Info("Stopping Arc services")
-
-	for _, service := range arcServices {
-		u.logger.Debugf("Stopping service: %s", service)
-		if err := utils.StopService(service); err != nil {
-			u.logger.Debugf("Failed to stop service %s (may not be running): %v", service, err)
-		}
-
-		// Disable the service to prevent restart
-		if err := utils.DisableService(service); err != nil {
-			u.logger.Debugf("Failed to disable service %s: %v", service, err)
-		}
-	}
-
-	return nil
 }
 
 // disconnectArcMachine disconnects the machine using azcmagent

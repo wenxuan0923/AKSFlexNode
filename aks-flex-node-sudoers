@@ -1,55 +1,74 @@
-# Sudoers configuration for aks-flex-node service
-# This file allows the aks-flex-node service user to run specific commands with sudo
-# Following principle of least privilege
+# Sudoers configuration for AKS Flex Node service
+# This file grants the aks-flex-node service user specific sudo permissions
+# needed for Kubernetes node operations, following principle of least privilege
 
-# System service management (required for bootstrap/unbootstrap)
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/bin/systemctl enable *
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/bin/systemctl disable *
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/bin/systemctl start *
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop *
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart *
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/bin/systemctl status *
+# Azure Arc agent management (required for Arc machine registration)
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /usr/bin/azcmagent connect *
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /usr/bin/azcmagent disconnect *
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /usr/bin/azcmagent show *
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /usr/bin/azcmagent logs *
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /usr/bin/azcmagent *
+
+# System service management (required for kubelet, containerd, CNI services)
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/systemctl daemon-reload
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/systemctl enable kubelet
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/systemctl enable containerd
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/systemctl enable --now kubelet
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/systemctl enable --now containerd
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/systemctl disable kubelet
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/systemctl disable containerd
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/systemctl start kubelet
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/systemctl start containerd
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/systemctl stop kubelet
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/systemctl stop containerd
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/systemctl restart kubelet
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/systemctl restart containerd
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/systemctl status kubelet
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/systemctl status containerd
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/systemctl is-active *
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/systemctl is-enabled *
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/systemctl list-unit-files *
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /usr/bin/systemctl list-unit-files *
 
 # Package management (for installing Kubernetes components)
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/bin/apt-get update
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/bin/apt-get install *
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/bin/apt-get remove *
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/bin/apt-get autoremove *
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/bin/apt-get autoclean
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/bin/apt-key add *
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/bin/gpg --dearmor *
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/bin/dpkg *
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /usr/bin/apt-get update
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /usr/bin/apt-get install -y apt-transport-https ca-certificates curl gpg
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /usr/bin/apt-get install -y kubelet kubeadm kubectl containerd
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /usr/bin/apt-get remove -y kubelet kubeadm kubectl containerd runc
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /usr/bin/apt-mark hold kubelet kubeadm kubectl
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /usr/bin/apt-mark unhold kubelet kubeadm kubectl
 
-# Azure Arc agent management
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/bin/azcmagent *, /opt/azcmagent/bin/azcmagent *
+# Directory and file operations for Kubernetes paths - simplified for compatibility
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/mkdir *, /usr/bin/mkdir *
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/mkdir -p /etc/kubernetes/*, /bin/mkdir -p /var/lib/kubelet/*, /bin/mkdir -p /var/lib/cni/*, /bin/mkdir -p /etc/containerd/*, /bin/mkdir -p /opt/cni/bin, /bin/mkdir -p /etc/cni/net.d, /bin/mkdir -p /etc/systemd/system/kubelet.service.d, /bin/mkdir -p /etc/sysctl.d, /bin/mkdir -p /etc/modules-load.d
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/cp *, /bin/mv *, /bin/rm *
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/chmod *, /bin/chown *
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/ln *, /usr/bin/ln *
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /usr/bin/install *, /bin/install *
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /usr/bin/curl *, /usr/bin/wget *
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/tar *, /usr/bin/unzip *
 
-# File system operations on specific system directories
-aks-flex-node ALL=(ALL) NOPASSWD: /bin/mkdir -p /etc/kubernetes*, /bin/mkdir -p /var/lib/kubelet*, /bin/mkdir -p /etc/containerd*, /bin/mkdir -p /opt/cni*, /bin/mkdir -p /etc/cni*
-aks-flex-node ALL=(ALL) NOPASSWD: /bin/rm -rf /etc/kubernetes*, /bin/rm -rf /var/lib/kubelet*, /bin/rm -rf /etc/containerd*, /bin/rm -rf /opt/cni*, /bin/rm -rf /etc/cni*
-aks-flex-node ALL=(ALL) NOPASSWD: /bin/rm -f /etc/apt/sources.list.d/kubernetes.list, /bin/rm -f /etc/apt/sources.list.d/docker.list
-aks-flex-node ALL=(ALL) NOPASSWD: /bin/rm -f /etc/apt/keyrings/*
-aks-flex-node ALL=(ALL) NOPASSWD: /bin/chmod * /etc/kubernetes*, /bin/chmod * /var/lib/kubelet*, /bin/chmod * /etc/containerd*, /bin/chmod * /opt/cni*, /bin/chmod * /etc/cni*
-aks-flex-node ALL=(ALL) NOPASSWD: /bin/chown * /etc/kubernetes*, /bin/chown * /var/lib/kubelet*, /bin/chown * /etc/containerd*, /bin/chown * /opt/cni*, /bin/chown * /etc/cni*
+# System configuration for Kubernetes
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /sbin/sysctl --system
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /sbin/modprobe overlay
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /sbin/modprobe br_netfilter
 
-# System configuration (sysctl, modules)
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/sbin/sysctl --system
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/sbin/modprobe *
+# Configuration file management
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/tee /etc/sysctl.d/k8s.conf
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/tee /etc/modules-load.d/k8s.conf
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/tee /etc/containerd/config.toml
 
-# User management (for group operations)
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/sbin/usermod -a -G himds aks-flex-node
+# Network operations for troubleshooting
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /sbin/ip route
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /sbin/ip addr
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/netstat -rn
 
-# Download and Execute binaries (with restricted paths)
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/bin/curl -* -o /usr/local/bin/* *
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/bin/wget -* -O /usr/local/bin/* *
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/bin/wget *
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/bin/install -* /usr/local/bin/*
+# Note: Arc agent (azcmagent) is managed by install.sh and should not be removed during unbootstrap
+# Unbootstrap only cleans up what AKS Flex Node created, not the underlying Arc installation
 
-# Network troubleshooting (for CNI debugging)
-aks-flex-node ALL=(ALL) NOPASSWD: /usr/bin/findmnt *, /bin/umount *
-
-# Allow running commands with himds group (for Arc authentication)
-aks-flex-node ALL=(himds) NOPASSWD:SETENV: ALL
-
-# Allow aks-flex-node to run all commands as root without password (for systemd context)
-aks-flex-node ALL=(ALL) NOPASSWD: ALL
+# Mount/unmount operations for cleanup
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /usr/bin/umount -l /var/lib/kubelet
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /usr/bin/umount -l *
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /usr/bin/mountpoint *
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /usr/bin/find * -delete
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/rmdir *
