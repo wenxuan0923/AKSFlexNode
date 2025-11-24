@@ -2,6 +2,7 @@ package bootstrapper
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -87,7 +88,7 @@ func (be *BaseExecutor) ExecuteSteps(ctx context.Context, steps []Executor, step
 				be.logger.Errorf("Bootstrap failed at step %s: %s (completedSteps: %d, totalSteps: %d)",
 					stepResult.StepName, stepResult.Error, len(result.StepResults), len(steps))
 
-				return result, fmt.Errorf("bootstrap failed at step %s: %w", stepResult.StepName, fmt.Errorf(stepResult.Error))
+				return result, fmt.Errorf("bootstrap failed at step %s: %w", stepResult.StepName, errors.New(stepResult.Error))
 			} else {
 				// Unbootstrap continues even if some steps fail
 				be.logger.Warnf("Cleanup step %s failed: %s (continuing with remaining steps)",

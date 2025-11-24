@@ -6,7 +6,7 @@ This document describes the testing infrastructure and continuous integration/co
 
 The project uses GitHub Actions for automated testing on pull requests and pushes to main/dev branches. The testing infrastructure includes:
 
-- **Build verification** across multiple Go versions
+- **Build verification** across Go 1.24
 - **Unit tests** with race detection and coverage reporting
 - **Code quality checks** with multiple linters
 - **Security scanning** with gosec
@@ -23,7 +23,7 @@ This workflow runs automatically on:
 **Jobs:**
 
 1. **Build** - Verifies the project builds successfully
-   - Tests on Go 1.23 and 1.24
+   - Tests on Go 1.24
    - Builds for current platform and all supported platforms (linux/amd64, linux/arm64)
 
 2. **Test** - Runs the test suite

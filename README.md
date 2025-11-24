@@ -233,7 +233,7 @@ For a complete list of build targets, run `make help`.
   - **Production:** 50GB+ free space
 - **Network:** Internet connectivity to Azure endpoints
 - **Privileges:** Root/sudo access required
-- **Build Dependencies:** Go 1.23+ (if building from source)
+- **Build Dependencies:** Go 1.24+ (if building from source)
 
 ### Storage Breakdown
 - **Base components:** ~3GB (Arc agent, runc, containerd, Kubernetes binaries, CNI plugins)
