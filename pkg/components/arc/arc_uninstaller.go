@@ -41,6 +41,7 @@ func (u *UnInstaller) Execute(ctx context.Context) error {
 	u.logger.Info("Starting Arc cleanup for unbootstrap process")
 
 	// Step 1: Set up Azure SDK clients
+	u.logger.Info("Step 1: Setting up Azure SDK clients")
 	if err := u.setUpClients(ctx); err != nil {
 		return fmt.Errorf("arc bootstrap setup failed at client setup: %w", err)
 	}
