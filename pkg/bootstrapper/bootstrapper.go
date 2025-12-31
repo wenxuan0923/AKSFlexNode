@@ -6,7 +6,6 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"go.goms.io/aks/AKSFlexNode/pkg/components/arc"
-	"go.goms.io/aks/AKSFlexNode/pkg/components/cluster_credentials"
 	"go.goms.io/aks/AKSFlexNode/pkg/components/cni"
 	"go.goms.io/aks/AKSFlexNode/pkg/components/containerd"
 	"go.goms.io/aks/AKSFlexNode/pkg/components/directories"
@@ -42,7 +41,6 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) (*ExecutionResult, error) 
 		containerd.NewInstaller(b.logger),            // Install containerd
 		kubernetes_components.NewInstaller(b.logger), // Install k8s components
 		cni.NewInstaller(b.logger),                   // Setup CNI (after container runtime)
-		cluster_credentials.NewInstaller(b.logger),   // Download cluster credentials using Arc MSI
 		kubelet.NewInstaller(b.logger),               // Configure kubelet service with Arc MSI auth
 		services.NewInstaller(b.logger),              // Start services
 	}
@@ -55,7 +53,6 @@ func (b *Bootstrapper) Unbootstrap(ctx context.Context) (*ExecutionResult, error
 	steps := []Executor{
 		services.NewUnInstaller(b.logger),              // Stop services first
 		kubelet.NewUnInstaller(b.logger),               // Clean kubelet configuration
-		cluster_credentials.NewUnInstaller(b.logger),   // Clean cluster credentials
 		cni.NewUnInstaller(b.logger),                   // Clean CNI configs
 		kubernetes_components.NewUnInstaller(b.logger), // Uninstall k8s binaries
 		containerd.NewUnInstaller(b.logger),            // Uninstall containerd binary

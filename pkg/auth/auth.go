@@ -30,7 +30,7 @@ func (a *AuthProvider) ArcCredential() (azcore.TokenCredential, error) {
 }
 
 // UserCredential returns credential based on config (service principal or CLI fallback)
-func (a *AuthProvider) UserCredential(ctx context.Context, cfg *config.Config) (azcore.TokenCredential, error) {
+func (a *AuthProvider) UserCredential(cfg *config.Config) (azcore.TokenCredential, error) {
 	if cfg.IsSPConfigured() {
 		return a.serviceCredential(cfg)
 	}

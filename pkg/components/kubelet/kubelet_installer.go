@@ -2,20 +2,27 @@ package kubelet
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/containerservice/armcontainerservice/v5"
+	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/sirupsen/logrus"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/clientcmd/api"
+
+	"go.goms.io/aks/AKSFlexNode/pkg/auth"
 	"go.goms.io/aks/AKSFlexNode/pkg/config"
 	"go.goms.io/aks/AKSFlexNode/pkg/utils"
 )
 
 // Installer handles kubelet installation and configuration
 type Installer struct {
-	config *config.Config
-	logger *logrus.Logger
+	config   *config.Config
+	logger   *logrus.Logger
+	mcClient *armcontainerservice.ManagedClustersClient
 }
 
 // NewInstaller creates a new kubelet Installer
@@ -34,6 +41,10 @@ func (i *Installer) GetName() string {
 // Execute installs and configures kubelet service
 func (i *Installer) Execute(ctx context.Context) error {
 	i.logger.Info("Installing and configuring kubelet")
+	// Set up mc client for getting cluster info
+	if err := i.setUpClients(); err != nil {
+		return fmt.Errorf("failed to set up Azure SDK clients: %w", err)
+	}
 
 	// Configure kubelet service with systemd unit file and default settings
 	if err := i.configure(ctx); err != nil {
@@ -107,7 +118,7 @@ func (i *Installer) configure(ctx context.Context) error {
 	}
 
 	// Create kubeconfig with exec credential provider
-	if err := i.createKubeconfigWithExecCredential(); err != nil {
+	if err := i.createKubeconfigWithExecCredential(ctx); err != nil {
 		return err
 	}
 
@@ -410,12 +421,15 @@ curl -s -H Metadata:true -H "Authorization: Basic $CHALLENGE_TOKEN" $TOKEN_URL |
 }
 
 // createKubeconfigWithExecCredential creates kubeconfig with exec credential provider for Arc authentication
-func (i *Installer) createKubeconfigWithExecCredential() error {
-	// Get both server URL and CA certificate data in one call
-	serverURL, caCertData, err := i.getClusterCredentialsInfo()
+func (i *Installer) createKubeconfigWithExecCredential(ctx context.Context) error {
+	kubeconfig, err := i.getClusterCredentials(ctx)
 	if err != nil {
-		i.logger.Debugf("Failed to get cluster info from credentials: %v", err)
-		return fmt.Errorf("failed to get cluster credentials info: %w", err)
+		return fmt.Errorf("failed to get cluster credentials: %w", err)
+	}
+
+	serverURL, caCertData, err := i.extractClusterInfo(kubeconfig)
+	if err != nil {
+		return fmt.Errorf("failed to extract cluster info from kubeconfig: %w", err)
 	}
 
 	// Create cluster configuration based on whether we have CA cert
@@ -463,25 +477,88 @@ users:
 	return nil
 }
 
-// getClusterCredentialsInfo extracts cluster info from downloaded admin kubeconfig
-func (i *Installer) getClusterCredentialsInfo() (serverURL, caCertData string, err error) {
-	adminKubeconfigPath := filepath.Join(i.config.Paths.Kubernetes.ConfigDir, "admin.conf")
-
-	if !utils.FileExists(adminKubeconfigPath) {
-		return "", "", fmt.Errorf("admin kubeconfig not found at %s", adminKubeconfigPath)
-	}
-
-	// Read the kubeconfig file
-	kubeconfigData, err := os.ReadFile(adminKubeconfigPath)
+func (i *Installer) setUpClients() error {
+	cred, err := auth.NewAuthProvider().UserCredential(config.GetConfig())
 	if err != nil {
-		return "", "", fmt.Errorf("failed to read admin kubeconfig: %w", err)
+		return fmt.Errorf("failed to get authentication credential: %w", err)
 	}
-
-	// Parse kubeconfig and extract cluster info
-	serverURL, caCertData, err = utils.GetClusterInfo(kubeconfigData)
+	clusterSubID := i.config.GetTargetClusterSubscriptionID()
+	clientFactory, err := armcontainerservice.NewClientFactory(clusterSubID, cred, nil)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to parse cluster info from kubeconfig: %w", err)
+		return fmt.Errorf("failed to create Azure Container Service client factory: %w", err)
+	}
+	i.mcClient = clientFactory.NewManagedClustersClient()
+	return nil
+
+}
+
+// GetClusterCredentials retrieves cluster kube admin credentials using Azure SDK
+func (i *Installer) getClusterCredentials(ctx context.Context) ([]byte, error) {
+	cfg := config.GetConfig()
+	clusterResourceGroup := cfg.GetTargetClusterResourceGroup()
+	clusterName := cfg.GetTargetClusterName()
+	i.logger.Infof("Fetching cluster credentials for cluster %s in resource group %s using Azure SDK",
+		clusterName, clusterResourceGroup)
+
+	// Get cluster admin credentials using the Azure SDK
+	resp, err := i.mcClient.ListClusterAdminCredentials(ctx, clusterResourceGroup, clusterName, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get cluster admin credentials for %s in resource group %s: %w", clusterName, clusterResourceGroup, err)
 	}
 
-	return serverURL, caCertData, nil
+	if len(resp.Kubeconfigs) == 0 {
+		return nil, fmt.Errorf("no kubeconfig found in cluster admin credentials response")
+	}
+
+	kubeconfig := resp.Kubeconfigs[0]
+	if kubeconfig == nil {
+		return nil, fmt.Errorf("kubeconfig is nil in the response")
+	}
+
+	i.logger.Debugf("Found %d kubeconfig(s), using the first one of name %s", len(resp.Kubeconfigs), to.String(kubeconfig.Name))
+
+	if len(kubeconfig.Value) == 0 {
+		return nil, fmt.Errorf("kubeconfig value is empty")
+	}
+
+	// The Value field is already []byte containing the kubeconfig data, no decoding needed
+	return kubeconfig.Value, nil
+}
+
+// extractClusterInfo extracts server URL and CA certificate data from kubeconfig
+func (i *Installer) extractClusterInfo(kubeconfigData []byte) (string, string, error) {
+	config, err := clientcmd.Load(kubeconfigData)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to parse kubeconfig: %w", err)
+	}
+
+	// For Azure AKS admin configs, there's typically only one cluster
+	if len(config.Clusters) == 0 {
+		return "", "", fmt.Errorf("no clusters found in kubeconfig")
+	}
+
+	// Get the first (and usually only) cluster
+	var cluster *api.Cluster
+	var clusterName string
+	for name, c := range config.Clusters {
+		cluster = c
+		clusterName = name
+		break
+	}
+
+	i.logger.Debugf("Using cluster: %s", clusterName)
+
+	// Extract what we need
+	if cluster.Server == "" {
+		return "", "", fmt.Errorf("server URL is empty")
+	}
+
+	if len(cluster.CertificateAuthorityData) == 0 {
+		return "", "", fmt.Errorf("CA certificate data is empty")
+	}
+
+	// CertificateAuthorityData should be base64-encoded for kubeconfig
+	// The field contains raw certificate bytes, so we need to encode them
+	caCertDataB64 := base64.StdEncoding.EncodeToString(cluster.CertificateAuthorityData)
+	return cluster.Server, caCertDataB64, nil
 }

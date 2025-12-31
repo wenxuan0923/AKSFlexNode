@@ -45,11 +45,10 @@ type TargetClusterConfig struct {
 
 // ArcConfig holds Azure Arc machine configuration for registering the machine with Azure Arc.
 type ArcConfig struct {
-	MachineName        string            `json:"machineName"`        // Name for the Arc machine resource
-	Tags               map[string]string `json:"tags"`               // Tags to apply to the Arc machine
-	ResourceGroup      string            `json:"resourceGroup"`      // Azure resource group for Arc machine
-	Location           string            `json:"location"`           // Azure region for Arc machine
-	AutoRoleAssignment bool              `json:"autoRoleAssignment"` // Enable automatic RBAC role assignment for Arc managed identity
+	MachineName   string            `json:"machineName"`   // Name for the Arc machine resource
+	Tags          map[string]string `json:"tags"`          // Tags to apply to the Arc machine
+	ResourceGroup string            `json:"resourceGroup"` // Azure resource group for Arc machine
+	Location      string            `json:"location"`      // Azure region for Arc machine
 }
 
 // AgentConfig holds agent-specific operational configuration.
@@ -134,6 +133,22 @@ func (cfg *Config) GetArcMachineName() string {
 	return ""
 }
 
+// GetTargetClusterName returns the target AKS cluster name from configuration
+func (cfg *Config) GetTargetClusterName() string {
+	if cfg.Azure.TargetCluster != nil && cfg.Azure.TargetCluster.Name != "" {
+		return cfg.Azure.TargetCluster.Name
+	}
+	return ""
+}
+
+// GetTargetClusterSubscriptionID returns the target AKS cluster subscription ID from configuration
+func (cfg *Config) GetTargetClusterSubscriptionID() string {
+	if cfg.Azure.TargetCluster != nil && cfg.Azure.TargetCluster.SubscriptionID != "" {
+		return cfg.Azure.TargetCluster.SubscriptionID
+	}
+	return ""
+}
+
 // GetTargetClusterResourceGroup returns the target AKS cluster resource group from configuration
 func (cfg *Config) GetTargetClusterResourceGroup() string {
 	if cfg.Azure.TargetCluster != nil && cfg.Azure.TargetCluster.ResourceGroup != "" {
@@ -181,14 +196,6 @@ func (cfg *Config) GetArcTags() map[string]string {
 		return cfg.Azure.Arc.Tags
 	}
 	return map[string]string{}
-}
-
-// GetArcAutoRoleAssignment returns whether automatic RBAC role assignment is enabled for Arc
-func (cfg *Config) GetArcAutoRoleAssignment() bool {
-	if cfg.Azure.Arc != nil {
-		return cfg.Azure.Arc.AutoRoleAssignment
-	}
-	return false // Default to false for safety
 }
 
 // GetSubscriptionID returns the Azure subscription ID from configuration

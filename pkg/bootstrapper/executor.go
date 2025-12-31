@@ -89,11 +89,10 @@ func (be *BaseExecutor) ExecuteSteps(ctx context.Context, steps []Executor, step
 					stepResult.StepName, stepResult.Error, len(result.StepResults), len(steps))
 
 				return result, fmt.Errorf("bootstrap failed at step %s: %w", stepResult.StepName, errors.New(stepResult.Error))
-			} else {
-				// Unbootstrap continues even if some steps fail
-				be.logger.Warnf("Cleanup step %s failed: %s (continuing with remaining steps)",
-					stepResult.StepName, stepResult.Error)
 			}
+			// Unbootstrap continues even if some steps fail for best effort cleanup
+			be.logger.Warnf("Cleanup step %s failed: %s (continuing with remaining steps)",
+				stepResult.StepName, stepResult.Error)
 		}
 	}
 

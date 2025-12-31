@@ -428,4 +428,10 @@ func TestPopulateTargetClusterInfoFromConfig(t *testing.T) {
 	if config.Azure.TargetCluster.NodeResourceGroup != expected.NodeResourceGroup {
 		t.Errorf("Expected NodeResourceGroup %s, got %s", expected.NodeResourceGroup, config.Azure.TargetCluster.NodeResourceGroup)
 	}
+	if config.Azure.TargetCluster.Location != expected.Location {
+		t.Errorf("Expected Location %s, got %s", expected.Location, config.Azure.TargetCluster.Location)
+	}
+	if config.Azure.TargetCluster.ResourceID != expected.ResourceID {
+		t.Errorf("Expected ResourceID %s, got %s", expected.ResourceID, config.Azure.TargetCluster.ResourceID)
+	}
 }

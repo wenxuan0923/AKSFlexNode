@@ -13,13 +13,13 @@ import (
 
 // UnInstaller handles Azure Arc cleanup operations
 type UnInstaller struct {
-	*Base
+	*base
 }
 
 // NewUnInstaller creates a new Arc UnInstaller
 func NewUnInstaller(logger *logrus.Logger) *UnInstaller {
 	return &UnInstaller{
-		Base: NewBase(logger),
+		base: newBase(logger),
 	}
 }
 
@@ -28,27 +28,31 @@ func (u *UnInstaller) GetName() string {
 	return "ArcUnbootstrap"
 }
 
+// IsCompleted checks if Arc cleanup has been completed
+// always returns false to ensure cleanup is attempted
+func (u *UnInstaller) IsCompleted(ctx context.Context) bool {
+	return false
+}
+
 // Execute performs Arc cleanup as part of the unbootstrap process
 // This method is designed to be called from unbootstrap steps and handles all Arc-related cleanup
 // It's resilient to failures and continues cleanup even if some operations fail
 func (u *UnInstaller) Execute(ctx context.Context) error {
 	u.logger.Info("Starting Arc cleanup for unbootstrap process")
 
-	// Ensure authentication
-	if err := u.ensureAuthentication(ctx); err != nil {
-		return fmt.Errorf("arc bootstrap setup failed at authentication: %w", err)
+	// Step 1: Set up Azure SDK clients
+	if err := u.setUpClients(ctx); err != nil {
+		return fmt.Errorf("arc bootstrap setup failed at client setup: %w", err)
 	}
-
-	// Track cleanup operations that failed
-	var failedOperations []string
 
 	arcMachine, err := u.getArcMachine(ctx)
 	if err != nil {
-		u.logger.Infof("Arc machine not found or already unregistered: %v", err)
+		u.logger.Warnf("Failed to get Arc machine (continuing cleanup): %v", err)
 	}
 
-	// Step 1: Remove RBAC role assignments first (while authentication still works)
-	u.logger.Info("Step 1: Removing RBAC role assignments")
+	var failedOperations []string
+	// Step 2: Remove RBAC role assignments first (while authentication still works)
+	u.logger.Info("Step 2: Removing RBAC role assignments")
 	if err := u.removeRBACRoles(ctx, arcMachine); err != nil {
 		u.logger.Warnf("Failed to remove RBAC roles (continuing cleanup): %v", err)
 		failedOperations = append(failedOperations, "RBAC role removal")
@@ -56,8 +60,8 @@ func (u *UnInstaller) Execute(ctx context.Context) error {
 		u.logger.Info("Successfully removed RBAC role assignments")
 	}
 
-	// Step 2: Unregister Arc machine from Azure
-	u.logger.Info("Step 2: Unregistering Arc machine from Azure")
+	// Step 3: Unregister Arc machine resource from Azure
+	u.logger.Info("Step 3: Unregistering Arc machine from Azure")
 	if err := u.unregisterArcMachine(ctx); err != nil {
 		u.logger.Warnf("Failed to unregister Arc machine (continuing cleanup): %v", err)
 		failedOperations = append(failedOperations, "Arc machine unregistration")
@@ -65,8 +69,9 @@ func (u *UnInstaller) Execute(ctx context.Context) error {
 		u.logger.Info("Successfully unregistered Arc machine from Azure")
 	}
 
-	// Step 3: Disconnect Arc machine (but preserve Arc agent installation)
-	u.logger.Info("Step 3: Disconnecting Arc machine from Azure (preserving Arc agent)")
+	// Step 4: Disconnect Arc machine
+	// It's for local cleanup only: Removes Arc agent state from the local machine
+	u.logger.Info("Step 4: Disconnecting Arc machine from Azure (preserving Arc agent)")
 	if err := u.disconnectArcMachine(ctx); err != nil {
 		u.logger.Warnf("Failed to disconnect Arc machine (continuing cleanup): %v", err)
 		failedOperations = append(failedOperations, "Arc machine disconnection")
@@ -89,21 +94,12 @@ func (u *UnInstaller) Execute(ctx context.Context) error {
 // unregisterArcMachine removes the Arc machine registration from Azure
 func (u *UnInstaller) unregisterArcMachine(ctx context.Context) error {
 	u.logger.Info("Unregistering Arc machine from Azure")
-
-	// Create hybrid compute machines client
-	client, err := u.createHybridComputeClient(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create hybrid compute client: %w", err)
-	}
-
 	arcMachineName := u.config.GetArcMachineName()
 	arcResourceGroup := u.config.GetArcResourceGroup()
-
 	u.logger.Infof("Deleting Arc machine resource: %s in resource group: %s", arcMachineName, arcResourceGroup)
 
-	// Delete the Arc machine resource
-	_, err = client.Delete(ctx, arcResourceGroup, arcMachineName, nil)
-	if err != nil {
+	// Delete the Arc machine resource from Azure
+	if _, err := u.hybridComputeMachineClient.Delete(ctx, arcResourceGroup, arcMachineName, nil); err != nil {
 		if strings.Contains(err.Error(), "ResourceNotFound") || strings.Contains(err.Error(), "NotFound") {
 			u.logger.Info("Arc machine resource not found (already deleted)")
 			return nil
@@ -125,23 +121,17 @@ func (u *UnInstaller) removeRBACRoles(ctx context.Context, arcMachine *armhybrid
 
 	u.logger.Infof("Removing role assignments for managed identity: %s", managedIdentityID)
 
-	// Create role assignments client
-	client, err := u.createRoleAssignmentsClient(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create role assignments client: %w", err)
-	}
-
 	// Define the scopes where we assigned roles
 	// Remove each role assignment
 	var removalErrors []string
-	rolesToRemove := u.getRoleAssignments(arcMachine)
+	rolesToRemove := u.getRoleAssignments()
 	for _, role := range rolesToRemove {
-		u.logger.Infof("Removing role assignment: %s on scope %s", role.RoleName, role.Scope)
-		if err := u.removeRoleAssignments(ctx, client, managedIdentityID, role.RoleID, role.Scope, role.RoleName); err != nil {
-			u.logger.Warnf("Failed to remove role assignment %s on scope %s: %v", role.RoleName, role.Scope, err)
-			removalErrors = append(removalErrors, fmt.Sprintf("%s: %v", role.RoleName, err))
+		u.logger.Infof("Removing role assignment: %s on scope %s", role.roleName, role.scope)
+		if err := u.removeRoleAssignment(ctx, managedIdentityID, role.roleID, role.scope, role.roleName); err != nil {
+			u.logger.Warnf("Failed to remove role assignment %s on scope %s: %v", role.roleName, role.scope, err)
+			removalErrors = append(removalErrors, fmt.Sprintf("%s: %v", role.roleName, err))
 		} else {
-			u.logger.Infof("Successfully removed role assignment: %s on scope %s", role.RoleName, role.Scope)
+			u.logger.Infof("Successfully removed role assignment: %s on scope %s", role.roleName, role.scope)
 		}
 	}
 
@@ -151,23 +141,6 @@ func (u *UnInstaller) removeRBACRoles(ctx context.Context, arcMachine *armhybrid
 
 	u.logger.Info("All RBAC role assignments removed successfully")
 	return nil
-}
-
-// IsCompleted checks if Arc cleanup has been completed
-// This can be used by unbootstrap steps to verify completion status
-// Note: In the new architecture, Arc agent remains installed but machine should be disconnected
-func (u *UnInstaller) IsCompleted(ctx context.Context) bool {
-	u.logger.Debug("Checking Arc cleanup completion status")
-
-	// Check if Arc machine is still registered with Azure
-	// This is the main indicator that cleanup is complete in the new architecture
-	if _, err := u.getArcMachine(ctx); err == nil {
-		u.logger.Debug("Arc machine is still registered with Azure")
-		return false
-	}
-
-	u.logger.Debug("Arc cleanup appears to be completed (machine disconnected, agent preserved)")
-	return true
 }
 
 // disconnectArcMachine disconnects the machine using azcmagent
@@ -184,19 +157,18 @@ func (u *UnInstaller) disconnectArcMachine(ctx context.Context) error {
 	return nil
 }
 
-// removeRoleAssignments removes role assignments for a specific principal, role, and scope
-func (u *UnInstaller) removeRoleAssignments(ctx context.Context, client *armauthorization.RoleAssignmentsClient, principalID, roleDefinitionID, scope, roleName string) error {
+// removeRoleAssignment removes role assignment for a specific principal, role, and scope
+func (u *UnInstaller) removeRoleAssignment(ctx context.Context, principalID, roleDefinitionID, scope, roleName string) error {
 	// Build the full role definition ID
 	fullRoleDefinitionID := fmt.Sprintf("/subscriptions/%s/providers/Microsoft.Authorization/roleDefinitions/%s",
 		u.config.Azure.SubscriptionID, roleDefinitionID)
 
-	// List role assignments for the scope
-	pager := client.NewListForScopePager(scope, &armauthorization.RoleAssignmentsClientListForScopeOptions{
+	// List role assignment for the scope
+	pager := u.roleAssignmentsClient.NewListForScopePager(scope, &armauthorization.RoleAssignmentsClientListForScopeOptions{
 		Filter: nil, // We'll filter programmatically
 	})
 
 	var assignmentsToDelete []string
-
 	for pager.More() {
 		page, err := pager.NextPage(ctx)
 		if err != nil {
@@ -210,7 +182,6 @@ func (u *UnInstaller) removeRoleAssignments(ctx context.Context, client *armauth
 				assignment.Properties.RoleDefinitionID != nil &&
 				*assignment.Properties.PrincipalID == principalID &&
 				*assignment.Properties.RoleDefinitionID == fullRoleDefinitionID {
-
 				if assignment.Name != nil {
 					assignmentsToDelete = append(assignmentsToDelete, *assignment.Name)
 				}
@@ -221,7 +192,7 @@ func (u *UnInstaller) removeRoleAssignments(ctx context.Context, client *armauth
 	// Delete found assignments
 	for _, assignmentName := range assignmentsToDelete {
 		u.logger.Debugf("Deleting role assignment: %s", assignmentName)
-		_, err := client.Delete(ctx, scope, assignmentName, nil)
+		_, err := u.roleAssignmentsClient.Delete(ctx, scope, assignmentName, nil)
 		if err != nil {
 			if strings.Contains(err.Error(), "RoleAssignmentNotFound") || strings.Contains(err.Error(), "NotFound") {
 				u.logger.Debugf("Role assignment %s not found (already deleted)", assignmentName)
