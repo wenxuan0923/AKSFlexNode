@@ -3,12 +3,13 @@ package containerd
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	"github.com/sirupsen/logrus"
 	"go.goms.io/aks/AKSFlexNode/pkg/utils"
 )
 
-// UnInstaller handles containerd Executeation operations
+// UnInstaller handles containerd uninstallation operations
 type UnInstaller struct {
 	logger *logrus.Logger
 }
@@ -22,12 +23,12 @@ func NewUnInstaller(logger *logrus.Logger) *UnInstaller {
 
 // GetName returns the cleanup step name
 func (u *UnInstaller) GetName() string {
-	return "ContainerdExecuteed"
+	return "ContainerdUninstaller"
 }
 
 // Execute removes containerd container runtime and cleans up configuration
 func (u *UnInstaller) Execute(ctx context.Context) error {
-	u.logger.Info("Executeing containerd")
+	u.logger.Info("Uninstalling containerd")
 
 	// Step 1: Stop containerd services
 	if err := u.stopContainerdServices(); err != nil {
@@ -49,44 +50,44 @@ func (u *UnInstaller) Execute(ctx context.Context) error {
 		return fmt.Errorf("failed to cleanup containerd files: %w", err)
 	}
 
-	// Verify Executeation
-	if err := u.validateExecuteation(); err != nil {
-		return fmt.Errorf("containerd Executeation validation failed: %w", err)
-	}
-
-	u.logger.Info("Containerd Executeed successfully")
+	u.logger.Info("Containerd uninstalled successfully")
 	return nil
 }
 
 // IsCompleted checks if containerd has been completely removed
 func (u *UnInstaller) IsCompleted(ctx context.Context) bool {
-	// Check if main binary exists
-	if utils.BinaryExists("containerd") {
+	// Check if any containerd binaries still exist
+	for _, binary := range containerdBinaries {
+		if utils.BinaryExists(binary) {
+			return false
+		}
+	}
+
+	// Check if config file still exists
+	if utils.FileExists(containerdConfigFile) {
 		return false
 	}
 
-	// Check if any containerd files still exist
-	containerdFiles := []string{
-		"/etc/containerd/config.toml",
-		"/var/lib/containerd/",
-	}
-
-	for _, file := range containerdFiles {
-		if utils.FileExists(file) {
-			return false
-		}
+	// Check if service file still exists
+	if utils.FileExists(containerdServiceFile) {
+		return false
 	}
 
 	return true
 }
 
-// stopContainerdServices stops all containerd-related services
+// stopContainerdServices stops and disables all containerd-related services
 func (u *UnInstaller) stopContainerdServices() error {
-	u.logger.Info("Ensuring containerd is stopped")
+	u.logger.Info("Stopping and disabling containerd service")
 
+	// Stop the service
 	if err := utils.StopService("containerd"); err != nil {
 		u.logger.Warnf("Failed to stop containerd service: %v", err)
-		return err
+	}
+
+	// Disable the service
+	if err := utils.RunSystemCommand("systemctl", "disable", "containerd"); err != nil {
+		u.logger.Warnf("Failed to disable containerd service: %v", err)
 	}
 
 	return nil
@@ -96,16 +97,13 @@ func (u *UnInstaller) stopContainerdServices() error {
 func (u *UnInstaller) removeContainerdBinaries() error {
 	u.logger.Info("Removing containerd binaries")
 
-	binaries := []string{
-		"/usr/bin/containerd",
-		"/usr/local/bin/containerd",
-		"/usr/bin/containerd-shim-runc-v2",
-		"/usr/local/bin/containerd-shim-runc-v2",
-		"/usr/bin/ctr",
-		"/usr/local/bin/ctr",
+	var binaryPaths []string
+	// Add system binary paths
+	for _, binary := range containerdBinaries {
+		binaryPaths = append(binaryPaths, filepath.Join(systemBinDir, binary))
 	}
 
-	if fileErrors := utils.RemoveFiles(binaries, u.logger); len(fileErrors) > 0 {
+	if fileErrors := utils.RemoveFiles(binaryPaths, u.logger); len(fileErrors) > 0 {
 		for _, err := range fileErrors {
 			u.logger.Warnf("Binary removal error: %v", err)
 		}
@@ -119,9 +117,7 @@ func (u *UnInstaller) removeSystemdServices() error {
 	u.logger.Info("Removing containerd systemd service")
 
 	serviceFiles := []string{
-		"/etc/systemd/system/containerd.service",
-		"/lib/systemd/system/containerd.service",
-		"/usr/lib/systemd/system/containerd.service",
+		containerdServiceFile,
 	}
 
 	if fileErrors := utils.RemoveFiles(serviceFiles, u.logger); len(fileErrors) > 0 {
@@ -143,42 +139,16 @@ func (u *UnInstaller) removeSystemdServices() error {
 func (u *UnInstaller) cleanupContainerdFiles() error {
 	u.logger.Info("Cleaning up containerd configuration and data files")
 
-	containerdFiles := []string{
-		"/etc/containerd/config.toml",
-	}
-
 	containerdDirectories := []string{
-		"/var/lib/containerd/",
-		"/etc/containerd/",
+		containerdDataDir,
+		defaultContainerdConfigDir,
 	}
 
-	// Remove individual files
-	if fileErrors := utils.RemoveFiles(containerdFiles, u.logger); len(fileErrors) > 0 {
-		for _, err := range fileErrors {
-			u.logger.Warnf("Configuration file removal error: %v", err)
-		}
-	}
-
-	// Remove directories
+	// Remove directories recursively
 	if dirErrors := utils.RemoveDirectories(containerdDirectories, u.logger); len(dirErrors) > 0 {
 		for _, err := range dirErrors {
 			u.logger.Warnf("Directory removal error: %v", err)
 		}
-	}
-
-	return nil
-}
-
-// validateExecuteation validates that containerd was Executeed correctly
-func (u *UnInstaller) validateExecuteation() error {
-	// Check if main binary still exists
-	if utils.FileExists(ContainerdBinaryPath) {
-		return fmt.Errorf("containerd binary still found after Executeation")
-	}
-
-	// Check if binary is still available in PATH
-	if utils.BinaryExists("containerd") {
-		return fmt.Errorf("containerd binary still available in PATH after Executeation")
 	}
 
 	return nil

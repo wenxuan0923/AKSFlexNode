@@ -132,13 +132,6 @@ func (c *Config) SetDefaults() {
 		c.Node.Kubelet.EvictionHard = make(map[string]string)
 	}
 
-	// Set default container runtime configuration if not provided
-	if c.Containerd.Version == "" {
-		c.Containerd.Version = "1.7.20"
-	}
-	if c.Containerd.PauseImage == "" {
-		c.Containerd.PauseImage = "mcr.microsoft.com/oss/kubernetes/pause:3.6"
-	}
 	if c.Containerd.MetricsAddress == "" {
 		c.Containerd.MetricsAddress = "0.0.0.0:10257"
 	}

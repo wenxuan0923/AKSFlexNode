@@ -3,7 +3,6 @@ package containerd
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -28,252 +27,187 @@ func NewInstaller(logger *logrus.Logger) *Installer {
 }
 
 // Execute downloads and installs the containerd container runtime with required plugins
-func (ci *Installer) Execute(ctx context.Context) error {
-	ci.logger.Infof("Installing containerd version %s", ci.config.Containerd.Version)
+func (i *Installer) Execute(ctx context.Context) error {
+	i.logger.Info("Step 1: Preparing containerd directories")
+	if err := i.prepareContainerdDirectories(); err != nil {
+		return fmt.Errorf("failed to prepare containerd directories: %w", err)
+	}
+	i.logger.Info("Prepared containerd directories successfully")
 
-	// Check if containerd binary exists
-	if utils.FileExists(ContainerdBinaryPath) {
-		ci.logger.Info("Existing containerd installation found, cleaning up before reinstallation")
-		if err := ci.cleanupExistingInstallation(); err != nil {
-			ci.logger.Warnf("Failed to cleanup existing containerd installation: %v", err)
-			// Continue anyway - the install command should overwrite
+	i.logger.Infof("Step 2: Downloading and installing containerd version %s", i.getContainerdVersion())
+	if err := i.installContainerd(); err != nil {
+		return fmt.Errorf("failed to install containerd: %w", err)
+	}
+	i.logger.Info("containerd binaries installed successfully")
+
+	// Configure containerd service and configuration files
+	i.logger.Info("Step 3: Configuring containerd")
+	if err := i.configure(); err != nil {
+		return fmt.Errorf("containerd configuration failed: %w", err)
+	}
+	i.logger.Info("containerd configured successfully")
+
+	i.logger.Info("Installer: containerd installed and configured successfully")
+	return nil
+}
+
+func (i *Installer) prepareContainerdDirectories() error {
+	for _, dir := range containerdDirs {
+		// Create directory if it doesn't exist
+		if !utils.DirectoryExists(dir) {
+			if err := utils.RunSystemCommand("mkdir", "-p", dir); err != nil {
+				return fmt.Errorf("failed to create containerd directory %s: %w", dir, err)
+			}
 		}
+
+		// Clean up any existing configurations to start fresh
+		if dir == defaultContainerdConfigDir {
+			i.logger.Debugf("Cleaning existing containerd configurations in: %s", dir)
+			if err := utils.RunSystemCommand("rm", "-rf", dir+"/*"); err != nil {
+				return fmt.Errorf("failed to clean containerd configuration directory: %w", err)
+			}
+		}
+
+		// Set proper permissions
+		if err := utils.RunSystemCommand("chmod", "-R", "0755", dir); err != nil {
+			logrus.Warnf("Failed to set permissions for containerd directory %s: %v", dir, err)
+		}
+	}
+	return nil
+}
+
+func (i *Installer) installContainerd() error {
+	// Check if we can skip installation
+	if i.canSkipContainerdInstallation() {
+		i.logger.Info("containerd is already installed and valid, skipping installation")
+		return nil
+	}
+
+	// Clean up any corrupted installations before proceeding
+	i.logger.Info("Cleaning up corrupted containerd installation files to start fresh")
+	if err := i.cleanupExistingInstallation(); err != nil {
+		i.logger.Warnf("Failed to cleanup existing containerd installation: %v", err)
+		// Continue anyway - we'll install fresh
 	}
 
 	// Construct download URL
-	url := fmt.Sprintf("https://github.com/containerd/containerd/releases/download/v%s/containerd-%s-linux-amd64.tar.gz",
-		ci.config.Containerd.Version, ci.config.Containerd.Version)
-
-	// Create temporary directory for download and extraction
-	tempDir, err := os.MkdirTemp("", "containerd-install-*")
+	containerdFileName, containerdURL, err := i.constructContainerdDownloadURL()
 	if err != nil {
-		return fmt.Errorf("failed to create temporary directory: %w", err)
+		return fmt.Errorf("failed to construct containerd download URL: %w", err)
+	}
+
+	// Download the containerd plugin tar file into tmp directory
+	tempFile := fmt.Sprintf("/tmp/%s", containerdFileName)
+	// Clean up any existing containerd temp files from /tmp directory to avoid conflicts
+	if err := utils.RunSystemCommand("bash", "-c", fmt.Sprintf("rm -f %s", tempFile)); err != nil {
+		logrus.Warnf("Failed to clean up existing containerd temp files from /tmp: %s", err)
 	}
 	defer func() {
-		_ = os.RemoveAll(tempDir)
+		if err := utils.RunCleanupCommand(tempFile); err != nil {
+			logrus.Warnf("Failed to clean up temp file %s: %v", tempFile, err)
+		}
 	}()
 
-	tarFile := filepath.Join(tempDir, fmt.Sprintf("containerd-%s-linux-amd64.tar.gz", ci.config.Containerd.Version))
-	extractDir := filepath.Join(tempDir, "extract")
-
-	// Download containerd with validation
-	ci.logger.Infof("Downloading containerd from %s", url)
-	if err := utils.DownloadFile(url, tarFile); err != nil {
-		return fmt.Errorf("failed to download containerd from %s: %w", url, err)
+	i.logger.Infof("Downloading containerd from %s into %s", containerdURL, tempFile)
+	if err := utils.DownloadFile(containerdURL, tempFile); err != nil {
+		return fmt.Errorf("failed to download containerd from %s: %w", containerdURL, err)
 	}
 
-	// Verify downloaded file exists and has content
-	info, err := os.Stat(tarFile)
-	if err != nil {
-		return fmt.Errorf("downloaded containerd file not found: %w", err)
-	}
-	if info.Size() == 0 {
-		return fmt.Errorf("downloaded containerd file is empty")
-	}
-	ci.logger.Infof("Downloaded containerd archive (%d bytes)", info.Size())
-
-	// Create extraction directory
-	if err := os.MkdirAll(extractDir, 0755); err != nil {
-		return fmt.Errorf("failed to create extraction directory: %w", err)
+	// Extract containerd binaries directly to /usr/bin, stripping the 'bin/' prefix
+	i.logger.Info("Extracting containerd binaries to /usr/bin")
+	if err := utils.RunSystemCommand("tar", "-C", systemBinDir, "--strip-components=1", "-xzf", tempFile, "bin/"); err != nil {
+		return fmt.Errorf("failed to extract containerd binaries: %w", err)
 	}
 
-	// Extract containerd
-	ci.logger.Info("Extracting containerd archive")
-	if err := utils.RunSystemCommand("tar", "-xzf", tarFile, "-C", extractDir); err != nil {
-		return fmt.Errorf("failed to extract containerd archive: %w", err)
-	}
-
-	// Verify extraction worked
-	binDir := filepath.Join(extractDir, "bin")
-	if _, err := os.Stat(binDir); err != nil {
-		return fmt.Errorf("containerd extraction failed, bin directory not found: %w", err)
-	}
-
-	// Verify containerd binary exists in extracted files
-	extractedContainerdPath := filepath.Join(binDir, "containerd")
-	if !utils.FileExists(extractedContainerdPath) {
-		return fmt.Errorf("containerd binary not found in extracted files")
-	}
-
-	// Install containerd binaries with proper permissions
-	ci.logger.Infof("Installing containerd binaries to %s", SystemBinDir)
-
-	// Get list of binaries to install
-	binFiles, err := os.ReadDir(binDir)
-	if err != nil {
-		return fmt.Errorf("failed to read extracted bin directory: %w", err)
-	}
-
-	for _, file := range binFiles {
-		if file.IsDir() {
-			continue
-		}
-
-		srcPath := filepath.Join(binDir, file.Name())
-		dstPath := filepath.Join(SystemBinDir, file.Name())
-
-		ci.logger.Debugf("Installing %s to %s", srcPath, dstPath)
-
-		// Install with proper permissions using install command
-		if err := utils.RunSystemCommand("install", "-m", "0755", srcPath, dstPath); err != nil {
-			return fmt.Errorf("failed to install %s to %s: %w", srcPath, dstPath, err)
+	// Ensure all extracted binaries are executable and have proper permissions
+	i.logger.Info("Setting executable permissions on containerd binaries")
+	for _, binary := range containerdBinaries {
+		binaryPath := filepath.Join(systemBinDir, binary)
+		if err := utils.RunSystemCommand("chmod", "0755", binaryPath); err != nil {
+			return fmt.Errorf("failed to set executable permissions on containerd binaries: %w", err)
 		}
 	}
 
-	// Configure containerd service and configuration files
-	if err := ci.configure(); err != nil {
-		return fmt.Errorf("containerd configuration failed: %w", err)
-	}
-
-	// Verify installation
-	if err := ci.validateInstallation(); err != nil {
-		return fmt.Errorf("containerd installation validation failed: %w", err)
-	}
-
-	ci.logger.Infof("containerd version %s installed and configured successfully", ci.config.Containerd.Version)
 	return nil
 }
 
-// IsCompleted checks if containerd and required plugins are installed
-func (ci *Installer) IsCompleted(ctx context.Context) bool {
+func (i *Installer) canSkipContainerdInstallation() bool {
 	// Check if containerd binary exists
-	if !utils.FileExists(ContainerdBinaryPath) {
-		return false
-	}
-
-	// Verify it's the correct version and functional
-	return ci.validateConfiguration()
-}
-
-// isVersionCorrect checks if the installed containerd version matches the expected version
-func (ci *Installer) isVersionCorrect() bool {
-	output, err := utils.RunCommandWithOutput(ContainerdBinaryPath, "--version")
-	if err != nil {
-		ci.logger.Debugf("Failed to get containerd version from %s: %v", ContainerdBinaryPath, err)
-		return false
-	}
-
-	// Check if version output contains expected version
-	versionMatch := strings.Contains(string(output), ci.config.Containerd.Version)
-	if !versionMatch {
-		ci.logger.Debugf("containerd version mismatch: expected '%s' in output, got: %s", ci.config.Containerd.Version, strings.TrimSpace(output))
-	}
-
-	return versionMatch
-}
-
-// validateInstallation validates that containerd was installed correctly and is functional
-func (ci *Installer) validateInstallation() error {
-	// Check if main binary exists
-	if !utils.FileExists(ContainerdBinaryPath) {
-		return fmt.Errorf("containerd binary not found after installation")
-	}
-
-	// Check if binary is executable
-	if err := utils.RunSystemCommand(ContainerdBinaryPath, "--version"); err != nil {
-		return fmt.Errorf("containerd binary is not executable or functional: %w", err)
-	}
-
-	// Verify version matches expected
-	if !ci.isVersionCorrect() {
-		return fmt.Errorf("installed containerd version does not match expected version %s", ci.config.Containerd.Version)
-	}
-
-	// Check for required containerd components
-	requiredBinaries := []string{"containerd", "containerd-shim-runc-v2", "ctr"}
-	for _, binary := range requiredBinaries {
-		binaryPath := filepath.Join(SystemBinDir, binary)
+	for _, binary := range containerdBinaries {
+		binaryPath := filepath.Join(systemBinDir, binary)
 		if !utils.FileExists(binaryPath) {
-			ci.logger.Warnf("Optional containerd binary not found: %s", binary)
-		} else {
-			ci.logger.Debugf("Verified containerd component exists: %s", binary)
-		}
-	}
-
-	return nil
-}
-
-// validateConfiguration validates that containerd configuration is correct and functional
-func (ci *Installer) validateConfiguration() bool {
-	// Check if containerd binary is executable
-	if output, err := utils.RunCommandWithOutput("test", "-x", ContainerdBinaryPath); err != nil {
-		ci.logger.Debugf("containerd binary is not executable: %v", err)
-		return false
-	} else if output != "" {
-		ci.logger.Debugf("containerd binary test output: %s", output)
-	}
-
-	// Verify containerd version is correct
-	if !ci.isVersionCorrect() {
-		return false
-	}
-
-	// Test basic containerd functionality
-	output, err := utils.RunCommandWithOutput(ContainerdBinaryPath, "--version")
-	if err != nil {
-		ci.logger.Debugf("Failed to run containerd --version: %v", err)
-		return false
-	}
-
-	// Check that version output contains expected markers
-	expectedMarkers := []string{"containerd", ci.config.Containerd.Version}
-	for _, marker := range expectedMarkers {
-		if !strings.Contains(output, marker) {
-			ci.logger.Debugf("Missing expected marker in containerd version output: %s", marker)
+			i.logger.Debugf("containerd binary %s does not exist", binaryPath)
 			return false
 		}
 	}
 
-	return true
+	// Verify containerd version is correct
+	output, err := utils.RunCommandWithOutput(defaultContainerdBinaryDir, "--version")
+	if err != nil {
+		i.logger.Debugf("Failed to get containerd version from %s: %v", defaultContainerdBinaryDir, err)
+		return false
+	}
+	versionMatch := strings.Contains(string(output), i.getContainerdVersion())
+	if versionMatch {
+		i.logger.Infof("containerd version %s is already installed", i.getContainerdVersion())
+		return true
+	}
+
+	return false
+}
+
+// constructContainerdDownloadURL constructs the download URL for the specified containerd version
+// it returns the file name and URL for downloading containerd
+func (i *Installer) constructContainerdDownloadURL() (string, string, error) {
+	containerdVersion := i.getContainerdVersion()
+	arch, err := utils.GetArc()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get architecture: %w", err)
+	}
+	url := fmt.Sprintf(containerdDownloadURL, containerdVersion, containerdVersion, arch)
+	fileName := fmt.Sprintf(containerdFileName, containerdVersion, arch)
+	i.logger.Infof("Constructed containerd download URL: %s", url)
+	return fileName, url, nil
 }
 
 // cleanupExistingInstallation removes any existing containerd installation that may be corrupted
-func (ci *Installer) cleanupExistingInstallation() error {
-	ci.logger.Debug("Cleaning up existing containerd installation files")
+func (i *Installer) cleanupExistingInstallation() error {
+	i.logger.Debug("Cleaning up existing containerd installation files")
 
 	// Try to stop any processes that might be using containerd (best effort)
 	if err := utils.RunSystemCommand("pkill", "-f", "containerd"); err != nil {
-		ci.logger.Debugf("No containerd processes found to kill (or pkill failed): %v", err)
+		i.logger.Debugf("No containerd processes found to kill (or pkill failed): %v", err)
 	}
 
 	// List of binaries to clean up
-	binariesToClean := []string{"containerd", "containerd-shim-runc-v2", "ctr", "containerd-shim", "containerd-shim-runc-v1"}
-
-	for _, binary := range binariesToClean {
-		binaryPath := filepath.Join(SystemBinDir, binary)
+	for _, binary := range containerdBinaries {
+		binaryPath := filepath.Join(systemBinDir, binary)
 		if utils.FileExists(binaryPath) {
-			ci.logger.Debugf("Removing existing containerd binary: %s", binaryPath)
+			i.logger.Debugf("Removing existing containerd binary: %s", binaryPath)
 			if err := utils.RunCleanupCommand(binaryPath); err != nil {
-				ci.logger.Warnf("Failed to remove %s: %v", binaryPath, err)
+				i.logger.Warnf("Failed to remove %s: %v", binaryPath, err)
 			}
 		}
 	}
 
-	ci.logger.Debug("Successfully cleaned up existing containerd installation")
+	i.logger.Debug("Successfully cleaned up existing containerd installation")
 	return nil
 }
 
 // configure configures containerd service and systemd unit file
-func (ci *Installer) configure() error {
-	ci.logger.Info("Configuring containerd")
-
+func (i *Installer) configure() error {
 	// Create containerd systemd service
-	if err := ci.createContainerdServiceFile(); err != nil {
+	if err := i.createContainerdServiceFile(); err != nil {
 		return err
 	}
 
 	// Create containerd configuration
-	if err := ci.createContainerdConfigFile(); err != nil {
-		return err
-	}
-
-	// Create kubenet template
-	if err := ci.createKubenetTemplateFile(); err != nil {
+	if err := i.createContainerdConfigFile(); err != nil {
 		return err
 	}
 
 	// Reload systemd to pick up the new containerd service configuration
-	ci.logger.Info("Reloading systemd to pick up containerd configuration changes")
+	i.logger.Info("Reloading systemd to pick up containerd configuration changes")
 	if err := utils.RunSystemCommand("systemctl", "daemon-reload"); err != nil {
 		return fmt.Errorf("failed to reload systemd after containerd configuration: %w", err)
 	}
@@ -282,7 +216,7 @@ func (ci *Installer) configure() error {
 }
 
 // createContainerdServiceFile creates the containerd systemd service file
-func (ci *Installer) createContainerdServiceFile() error {
+func (i *Installer) createContainerdServiceFile() error {
 	containerdService := `[Unit]
 Description=containerd container runtime
 Documentation=https://containerd.io
@@ -315,12 +249,12 @@ WantedBy=multi-user.target`
 	defer utils.CleanupTempFile(tempFile.Name())
 
 	// Copy the temp file to the final location using sudo
-	if err := utils.RunSystemCommand("cp", tempFile.Name(), "/etc/systemd/system/containerd.service"); err != nil {
+	if err := utils.RunSystemCommand("cp", tempFile.Name(), containerdServiceFile); err != nil {
 		return fmt.Errorf("failed to install containerd service file: %w", err)
 	}
 
-	// Set proper permissions
-	if err := utils.RunSystemCommand("chmod", "644", "/etc/systemd/system/containerd.service"); err != nil {
+	// Set proper permissions: root can modify the service, but everyone else can only read it, and nobody can execute it
+	if err := utils.RunSystemCommand("chmod", "644", containerdServiceFile); err != nil {
 		return fmt.Errorf("failed to set containerd service file permissions: %w", err)
 	}
 
@@ -328,7 +262,7 @@ WantedBy=multi-user.target`
 }
 
 // createContainerdConfigFile creates the containerd configuration file
-func (ci *Installer) createContainerdConfigFile() error {
+func (i *Installer) createContainerdConfigFile() error {
 	containerdConfig := fmt.Sprintf(`version = 2
 oom_score = 0
 [plugins."io.containerd.grpc.v1.cri"]
@@ -347,96 +281,93 @@ oom_score = 0
 	[plugins."io.containerd.grpc.v1.cri".cni]
 		bin_dir = "%s"
 		conf_dir = "%s"
-		conf_template = "/etc/containerd/kubenet_template.conf"
 	[plugins."io.containerd.grpc.v1.cri".registry]
 		config_path = "/etc/containerd/certs.d"
 	[plugins."io.containerd.grpc.v1.cri".registry.headers]
 		X-Meta-Source-Client = ["azure/aks"]
 [metrics]
 	address = "%s"`,
-		ci.config.Containerd.PauseImage,
+		i.getPauseImage(),
 		cni.DefaultCNIBinDir,
 		cni.DefaultCNIConfDir,
-		ci.config.Containerd.MetricsAddress)
+		i.getMetricsAddress())
 
-	// Create containerd config file using sudo-aware approach
+	// Create a tmp containerd config file
 	tempConfigFile, err := utils.CreateTempFile("containerd-config-*.toml", []byte(containerdConfig))
 	if err != nil {
 		return fmt.Errorf("failed to create temporary containerd config file: %w", err)
 	}
 	defer utils.CleanupTempFile(tempConfigFile.Name())
 
-	// Ensure /etc/containerd directory exists
-	if err := utils.RunSystemCommand("mkdir", "-p", "/etc/containerd"); err != nil {
-		return fmt.Errorf("failed to create containerd config directory: %w", err)
-	}
-
 	// Copy the temp file to the final location using sudo
-	if err := utils.RunSystemCommand("cp", tempConfigFile.Name(), "/etc/containerd/config.toml"); err != nil {
+	if err := utils.RunSystemCommand("cp", tempConfigFile.Name(), containerdConfigFile); err != nil {
 		return fmt.Errorf("failed to install containerd config file: %w", err)
 	}
 
 	// Set proper permissions
-	if err := utils.RunSystemCommand("chmod", "644", "/etc/containerd/config.toml"); err != nil {
+	if err := utils.RunSystemCommand("chmod", "644", containerdConfigFile); err != nil {
 		return fmt.Errorf("failed to set containerd config file permissions: %w", err)
 	}
 
 	return nil
 }
 
-// createKubenetTemplateFile creates the kubenet CNI template file
-func (ci *Installer) createKubenetTemplateFile() error {
-	kubenetTemplate := `{
-    "cniVersion": "0.3.1",
-    "name": "kubenet",
-    "plugins": [{
-    "type": "bridge",
-    "bridge": "cbr0",
-    "mtu": 1500,
-    "addIf": "eth0",
-    "isGateway": true,
-    "ipMasq": false,
-    "promiscMode": true,
-    "hairpinMode": false,
-    "ipam": {
-        "type": "host-local",
-        "ranges": [{{range $i, $range := .PodCIDRRanges}}{{if $i}}, {{end}}[{"subnet": "{{$range}}"}]{{end}}],
-        "routes": [{{range $i, $route := .Routes}}{{if $i}}, {{end}}{"dst": "{{$route}}"}{{end}}]
-    }
-    },
-    {
-    "type": "portmap",
-    "capabilities": {"portMappings": true},
-    "externalSetMarkChain": "KUBE-MARK-MASQ"
-    }]
-}`
-
-	// Create kubenet template file using sudo-aware approach
-	tempTemplateFile, err := utils.CreateTempFile("kubenet-template-*.conf", []byte(kubenetTemplate))
-	if err != nil {
-		return fmt.Errorf("failed to create temporary kubenet template file: %w", err)
-	}
-	defer utils.CleanupTempFile(tempTemplateFile.Name())
-
-	// Copy the temp file to the final location using sudo
-	if err := utils.RunSystemCommand("cp", tempTemplateFile.Name(), "/etc/containerd/kubenet_template.conf"); err != nil {
-		return fmt.Errorf("failed to install kubenet template file: %w", err)
-	}
-
-	// Set proper permissions
-	if err := utils.RunSystemCommand("chmod", "644", "/etc/containerd/kubenet_template.conf"); err != nil {
-		return fmt.Errorf("failed to set kubenet template file permissions: %w", err)
-	}
-
-	return nil
-}
-
 // Validate validates preconditions before execution
-func (ci *Installer) Validate(ctx context.Context) error {
+func (i *Installer) Validate(ctx context.Context) error {
 	return nil
 }
 
 // GetName returns the step name
-func (ci *Installer) GetName() string {
+func (i *Installer) GetName() string {
 	return "ContainerdInstaller"
+}
+
+// IsCompleted checks if containerd and required plugins are installed
+func (i *Installer) IsCompleted(ctx context.Context) bool {
+	// Check if containerd binaries are installed and functional
+	if !i.canSkipContainerdInstallation() {
+		return false
+	}
+
+	// Check if containerd config file exists
+	if !utils.FileExists(containerdConfigFile) {
+		return false
+	}
+
+	// Check if containerd service file exists
+	if !utils.FileExists(containerdServiceFile) {
+		return false
+	}
+
+	// Verify systemd can parse the service file
+	if err := utils.RunSystemCommand("systemctl", "check", "containerd"); err != nil {
+		i.logger.Debugf("containerd service file is invalid: %v", err)
+		return false
+	}
+
+	return true
+}
+
+func (i *Installer) getContainerdVersion() string {
+	if i.config.Containerd.Version != "" {
+		return i.config.Containerd.Version
+	}
+	// Default to a known stable version if not specified
+	return "1.7.20"
+}
+
+func (i *Installer) getPauseImage() string {
+	if i.config.Containerd.PauseImage != "" {
+		return i.config.Containerd.PauseImage
+	}
+	// Default pause image
+	return "mcr.microsoft.com/oss/kubernetes/pause:3.6"
+}
+
+func (i *Installer) getMetricsAddress() string {
+	if i.config.Containerd.MetricsAddress != "" {
+		return i.config.Containerd.MetricsAddress
+	}
+	// Default metrics address
+	return "0.0.0.0:10257"
 }

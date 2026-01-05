@@ -100,7 +100,6 @@ func (i *Installer) Validate(ctx context.Context) error {
 // getRequiredDirectories returns the list of directories required for the bootstrap process
 func (i *Installer) getRequiredDirectories() []string {
 	return []string{
-		"/etc/containerd",                       // containerd config directory
 		"/etc/systemd/system/kubelet.service.d", // kubelet service drop-in directory
 		"/var/lib/kubelet",                      // kubelet data directory
 	}
