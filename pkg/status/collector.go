@@ -224,7 +224,6 @@ func (c *Collector) checkArcConnectivityFallback(ctx context.Context) (bool, err
 	return false, nil
 }
 
-
 // isKubeletRunning checks if the kubelet service is running
 func (c *Collector) isKubeletRunning(ctx context.Context) bool {
 	if output, err := c.runCommand(ctx, "systemctl", "is-active", "kubelet"); err == nil {
@@ -232,7 +231,6 @@ func (c *Collector) isKubeletRunning(ctx context.Context) bool {
 	}
 	return false
 }
-
 
 // NeedsBootstrap checks if the node needs to be (re)bootstrapped based on status file
 func (c *Collector) NeedsBootstrap(ctx context.Context) bool {
