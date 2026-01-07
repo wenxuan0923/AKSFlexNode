@@ -292,10 +292,10 @@ setup_sudo_permissions() {
 setup_systemd_service() {
     log_info "Setting up systemd service..."
 
-    # Download service file from repository
+    # Download service file from repository (use the same version as the binary)
     local temp_dir
     temp_dir=$(mktemp -d)
-    local service_url="https://raw.githubusercontent.com/${REPO}/main/aks-flex-node-agent.service"
+    local service_url="https://raw.githubusercontent.com/${REPO}/${version}/aks-flex-node-agent.service"
 
     if command -v curl &> /dev/null; then
         if ! curl -L -f -o "$temp_dir/aks-flex-node-agent.service" "$service_url"; then
