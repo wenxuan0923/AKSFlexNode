@@ -24,7 +24,7 @@ func NewUnInstaller(logger *logrus.Logger) *UnInstaller {
 
 // GetName returns the cleanup step name
 func (ru *UnInstaller) GetName() string {
-	return "Runc_Uninstaller"
+	return "RuncUninstaller"
 }
 
 // Execute removes runc
