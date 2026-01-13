@@ -103,16 +103,30 @@ run_unbootstrap() {
         log_info "Using config file: $config_file"
     else
         log_warning "Config file not found at $CONFIG_DIR/config.json"
-        log_info "Attempting unbootstrap without config file..."
+        log_warning "Cannot run unbootstrap without config file - skipping resource cleanup"
+        log_info "Manual cleanup of Azure resources may be required"
+        return 0
     fi
 
-    # Run unbootstrap
-    if [[ -n "$config_file" ]]; then
-        "$INSTALL_DIR/aks-flex-node" unbootstrap --config "$config_file" || {
+    # Run unbootstrap to clean up resources
+    # Get the current user who ran sudo (the one with Azure CLI credentials)
+    local current_user
+    current_user=$(logname 2>/dev/null || echo "${SUDO_USER:-$USER}")
+    local current_user_home
+    current_user_home=$(eval echo "~$current_user")
+
+    # Set Azure CLI environment variable to point to the user's .azure directory
+    local azure_config_dir="$current_user_home/.azure"
+
+    if [[ -d "$azure_config_dir" ]]; then
+        log_info "Using Azure CLI credentials from: $azure_config_dir"
+        sudo env AZURE_CONFIG_DIR="$azure_config_dir" "$INSTALL_DIR/aks-flex-node" unbootstrap --config "$config_file" || {
             log_warning "Unbootstrap failed - this may be expected if resources are already cleaned up"
         }
     else
-        "$INSTALL_DIR/aks-flex-node" unbootstrap || {
+        log_warning "Azure CLI credentials not found at $azure_config_dir"
+        log_info "Attempting unbootstrap without Azure CLI credentials..."
+        sudo "$INSTALL_DIR/aks-flex-node" unbootstrap --config "$config_file" || {
             log_warning "Unbootstrap failed - this may be expected if resources are already cleaned up"
         }
     fi
