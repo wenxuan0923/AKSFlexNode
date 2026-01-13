@@ -118,9 +118,9 @@ jobs:
 
             ### Installation
 
-            **Quick install (Ubuntu 22.04/20.04):**
+            **Quick install (Ubuntu 22.04/24.04):**
             ```bash
-            curl -fsSL https://raw.githubusercontent.com/Azure/AKSFlexNode/main/scripts/install.sh | bash
+            curl -fsSL https://raw.githubusercontent.com/Azure/AKSFlexNode/main/scripts/install.sh | sudo bash
             ```
 
             **Manual installation:**
