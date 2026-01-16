@@ -60,7 +60,9 @@ net.bridge.bridge-nf-call-ip6tables = 1
 net.ipv4.ip_forward = 1
 vm.overcommit_memory = 1
 kernel.panic = 10
-kernel.panic_on_oops = 1`
+kernel.panic_on_oops = 1
+# Disable swap permanently - required for kubelet
+vm.swappiness = 0`
 
 	// Create sysctl directory if it doesn't exist
 	if err := utils.RunSystemCommand("mkdir", "-p", sysctlDir); err != nil {

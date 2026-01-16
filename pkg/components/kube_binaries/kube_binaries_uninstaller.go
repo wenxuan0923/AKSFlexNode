@@ -2,7 +2,6 @@ package kube_binaries
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/sirupsen/logrus"
 	"go.goms.io/aks/AKSFlexNode/pkg/utils"
@@ -27,31 +26,9 @@ func (u *UnInstaller) GetName() string {
 
 // Execute removes Kubernetes components
 func (u *UnInstaller) Execute(ctx context.Context) error {
-	u.logger.Info("Executeing Kubernetes components")
-
-	// List of Kubernetes packages to remove
-	packages := []string{
-		kubeletBinary,
-		kubeadmBinary,
-		kubectlBinary,
-	}
-
-	// Remove packages using shared utility
-	errors := utils.RemovePackages(packages, u.logger)
-
-	// Clean up package cache using shared utility
-	utils.CleanPackageCache(u.logger)
-
-	// Remove Kubernetes repository files
-	u.logger.Info("Removing Kubernetes apt repository")
-	repoFiles := []string{
-		KubernetesRepoList,
-		KubernetesKeyring,
-	}
-	utils.RemoveFiles(repoFiles, u.logger)
-
-	// Remove binaries directly if they were manually Executeed
 	u.logger.Info("Removing Kubernetes binaries")
+
+	// Remove Kubernetes binaries (rm -f handles non-existent files gracefully)
 	binaryFiles := []string{
 		kubeletPath,
 		kubectlPath,
@@ -63,11 +40,7 @@ func (u *UnInstaller) Execute(ctx context.Context) error {
 		}
 	}
 
-	if len(errors) > 0 {
-		return fmt.Errorf("failed to remove %d Kubernetes components: %v", len(errors), errors[0])
-	}
-
-	u.logger.Info("Kubernetes components Executeed successfully")
+	u.logger.Info("Kubernetes binaries removal completed")
 	return nil
 }
 

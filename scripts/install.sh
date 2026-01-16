@@ -206,10 +206,60 @@ install_azure_cli() {
     fi
 }
 
+check_azure_cli_auth() {
+    log_info "Checking Azure CLI authentication..."
+
+    # Check if the user who ran sudo is authenticated
+    local current_user="${SUDO_USER:-}"
+    if [[ -n "$current_user" ]]; then
+        log_info "Checking Azure CLI authentication for user: $current_user"
+
+        if sudo -u "$current_user" az account show &>/dev/null; then
+            log_success "Azure CLI is authenticated for user: $current_user"
+
+            # Check if .azure directory exists
+            local azure_dir
+            azure_dir=$(eval echo "~$current_user")/.azure
+
+            if [[ -d "$azure_dir" ]]; then
+                log_info "Azure CLI configuration found at: $azure_dir"
+                log_info "Will configure permissions for service access"
+            else
+                log_warning "Azure CLI directory not found at: $azure_dir"
+            fi
+        else
+            log_warning "Azure CLI is not authenticated for user: $current_user"
+            log_info ""
+            log_info "If you want to use Azure CLI authentication:"
+            log_info "  1. Exit this installer (Ctrl+C)"
+            log_info "  2. Run 'az login' as user $current_user"
+            log_info "  3. Then re-run this installer with sudo"
+            log_info ""
+            echo -n "Do you want to continue anyway? (service principal auth only) [y/N]: "
+            read -r response
+            case "$response" in
+                [yY]|[yY][eE][sS])
+                    log_info "Continuing without CLI authentication. Make sure to configure service principal."
+                    return 0
+                    ;;
+                *)
+                    log_info "Installation cancelled. Please run 'az login' first."
+                    exit 0
+                    ;;
+            esac
+        fi
+    else
+        log_warning "Could not detect original user (SUDO_USER not set)"
+        log_info "Make sure to run 'az login' before configuring the service"
+    fi
+}
+
 install_arc_agent() {
     log_info "Installing Azure Arc agent..."
 
     if ! command -v azcmagent &> /dev/null; then
+        # Clean up any existing package state to avoid conflicts
+        sudo dpkg --purge azcmagent 2>/dev/null || true
         log_info "Downloading Azure Arc agent installation script..."
         local temp_dir
         temp_dir=$(mktemp -d)
@@ -255,9 +305,9 @@ setup_permissions() {
         find "$current_user_home/.azure" -type d -exec chmod g+rwxs {} \;
 
         # Set group read/write permissions on all existing files
-        find "$current_user_home/.azure" -type f -exec chmod g+rw {} \;
+        find "$current_user_home/.azure" -type f -exec chmod g+rw {} \; 
 
-        log_success "Azure CLI access configured for service user (user: $current_user)"
+    log_success "Azure CLI access configured for service user (user: $current_user)"
     else
         log_warning "Azure CLI not found at $current_user_home/.azure - skipping CLI access setup"
     fi
@@ -302,7 +352,7 @@ setup_sudo_permissions() {
     # Download sudoers file from repository
     local temp_dir
     temp_dir=$(mktemp -d)
-    local sudoers_url="https://raw.githubusercontent.com/${REPO}/main/aks-flex-node-sudoers"
+    local sudoers_url="https://raw.githubusercontent.com/${REPO}/${version}/aks-flex-node-sudoers"
 
     if command -v curl &> /dev/null; then
         if ! curl -L -f -o "$temp_dir/aks-flex-node-sudoers" "$sudoers_url"; then
@@ -375,8 +425,8 @@ setup_systemd_service() {
     current_user_home=$(eval echo "~$current_user")
 
     log_info "Configuring service file for current user ($current_user)..."
-    sed -i "s|Environment=AZURE_CONFIG_DIR=/home/ubuntu/.azure|Environment=AZURE_CONFIG_DIR=$current_user_home/.azure|g" /etc/systemd/system/aks-flex-node-agent.service
-    sed -i "s|SupplementaryGroups=himds ubuntu|SupplementaryGroups=himds $current_user|g" /etc/systemd/system/aks-flex-node-agent.service
+    sed -i "s|PLACEHOLDER_AZURE_CONFIG_DIR|$current_user_home/.azure|g" /etc/systemd/system/aks-flex-node-agent.service
+    sed -i "s|PLACEHOLDER_USER_GROUP|$current_user|g" /etc/systemd/system/aks-flex-node-agent.service
 
     # Reload systemd
     systemctl daemon-reload
@@ -451,7 +501,7 @@ EOF
     echo "  Binary:        $INSTALL_DIR/aks-flex-node"
     echo ""
     echo -e "${YELLOW}Uninstall:${NC}"
-    echo "  To uninstall:  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/scripts/uninstall.sh | sudo bash -s -- --force"
+    echo "  To uninstall:  curl -fsSL https://raw.githubusercontent.com/${REPO}/${version}/scripts/uninstall.sh | sudo bash -s -- --force"
 }
 
 main() {
@@ -496,6 +546,7 @@ main() {
     # Setup service components
     setup_service_user
     install_azure_cli
+    check_azure_cli_auth
     install_arc_agent
     setup_permissions
     setup_hostname_resolution
