@@ -3,7 +3,6 @@ package status
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"go.goms.io/aks/AKSFlexNode/pkg/config"
+	"go.goms.io/aks/AKSFlexNode/pkg/utils"
 )
 
 // Collector collects system and node status information
@@ -38,22 +38,18 @@ func (c *Collector) CollectStatus(ctx context.Context) (*NodeStatus, error) {
 		AgentVersion: c.agentVersion,
 	}
 
-	// Get kubelet version
-	version, err := c.getKubeletVersion(ctx)
-	if err != nil {
-		c.logger.Warnf("Failed to get kubelet version: %v", err)
-	}
-	status.KubeletVersion = version
+	// Get kubelet related status
+	status.KubeletVersion = c.getKubeletVersion(ctx)
+	status.KubeletRunning = utils.IsServiceActive("kubelet")
+	status.KubeletReady = c.isKubeletReady(ctx)
 
-	// Check if kubelet is running
-	status.KubeletRunning = c.isKubeletRunning(ctx)
+	// get containerd related status
+	status.ContainerdVersion = c.getContainerdVersion(ctx)
+	// check if containerd is running, it will cause kubelet not ready
+	status.ContainerdRunning = utils.IsServiceActive("containerd")
 
 	// Get runc version
-	version, err = c.getRuncVersion(ctx)
-	if err != nil {
-		c.logger.Warnf("Failed to get runc version: %v", err)
-	}
-	status.RuncVersion = version
+	status.RuncVersion = c.getRuncVersion(ctx)
 
 	// Collect Arc status
 	arcStatus, err := c.collectArcStatus(ctx)
@@ -66,26 +62,44 @@ func (c *Collector) CollectStatus(ctx context.Context) (*NodeStatus, error) {
 }
 
 // getKubeletVersion gets the kubelet version
-func (c *Collector) getKubeletVersion(ctx context.Context) (string, error) {
+func (c *Collector) getKubeletVersion(ctx context.Context) string {
 	output, err := c.runCommand(ctx, "/usr/local/bin/kubelet", "--version")
 	if err != nil {
-		return "unknown", err
+		c.logger.Warnf("Failed to get kubelet version: %v", err)
+		return "unknown"
 	}
 
 	// Extract version from output like "Kubernetes v1.32.7"
 	parts := strings.Fields(strings.TrimSpace(output))
 	if len(parts) >= 2 {
-		return strings.TrimPrefix(parts[1], "v"), nil
+		return strings.TrimPrefix(parts[1], "v")
 	}
 
-	return "unknown", fmt.Errorf("could not parse kubelet version from: %s", output)
+	c.logger.Warnf("Failed to parse kubelet version from output: %s", output)
+	return "unknown"
+}
+
+func (c *Collector) getContainerdVersion(ctx context.Context) string {
+	output, err := c.runCommand(ctx, "containerd", "--version")
+	if err != nil {
+		c.logger.Warnf("Failed to get containerd version: %v", err)
+		return "unknown"
+	}
+
+	// Extract version from output like "containerd github.com/containerd/containerd v1.7.20 8fc6bcff51318944179630522a095cc9dbf9f353"
+	parts := strings.Fields(strings.TrimSpace(output))
+	if len(parts) >= 3 {
+		return strings.TrimPrefix(parts[2], "v")
+	}
+	return "unknown"
 }
 
 // getRuncVersion gets the runc version
-func (c *Collector) getRuncVersion(ctx context.Context) (string, error) {
+func (c *Collector) getRuncVersion(ctx context.Context) string {
 	output, err := c.runCommand(ctx, "runc", "--version")
 	if err != nil {
-		return "unknown", err
+		c.logger.Warnf("Failed to get runc version: %v", err)
+		return "unknown"
 	}
 
 	// Parse runc version output
@@ -95,13 +109,14 @@ func (c *Collector) getRuncVersion(ctx context.Context) (string, error) {
 			parts := strings.Fields(line)
 			for i, part := range parts {
 				if part == "version" && i+1 < len(parts) {
-					return parts[i+1], nil
+					return parts[i+1]
 				}
 			}
 		}
 	}
 
-	return "unknown", fmt.Errorf("could not parse runc version from: %s", output)
+	c.logger.Warnf("Failed to parse runc version from output: %s", output)
+	return "unknown"
 }
 
 // collectArcStatus gathers Azure Arc machine registration and connection status
@@ -176,12 +191,41 @@ func (c *Collector) parseArcShowOutput(status *ArcStatus, output string) {
 	}
 }
 
-// isKubeletRunning checks if the kubelet service is running
-func (c *Collector) isKubeletRunning(ctx context.Context) bool {
-	if output, err := c.runCommand(ctx, "systemctl", "is-active", "kubelet"); err == nil {
-		return strings.TrimSpace(output) == "active"
+// isKubeletReady checks if the kubelet reports the node as Ready
+func (c *Collector) isKubeletReady(ctx context.Context) string {
+	hostName, err := os.Hostname()
+	if err != nil {
+		c.logger.Warnf("Failed to get hostname: %v", err)
+		return "Unknown"
 	}
-	return false
+
+	// Readiness condition status is one of: True, False, Unknown
+	args := []string{
+		"--kubeconfig",
+		"/var/lib/kubelet/kubeconfig",
+		"get",
+		"node",
+		hostName,
+		"-o",
+		"jsonpath={.status.conditions[?(@.type==\"Ready\")].status}",
+	}
+
+	output, err := utils.RunCommandWithOutput("kubectl", args...)
+	if err != nil {
+		// Common in dev: agent runs as ubuntu and can't read root:aks-flex-node 0640 kubeconfig.
+		// Retry with sudo (non-interactive) if we see a permissions failure.
+		c.logger.Errorf("kubectl command failed: %v with output: %s", err, output)
+		return "Unknown"
+	}
+
+	switch strings.TrimSpace(output) {
+	case "True":
+		return "Ready"
+	case "False":
+		return "NotReady"
+	default:
+		return "Unknown"
+	}
 }
 
 // NeedsBootstrap checks if the node needs to be (re)bootstrapped based on status file

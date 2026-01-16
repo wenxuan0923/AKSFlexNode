@@ -17,7 +17,7 @@ import (
 
 // sudoCommandLists holds the command lists for sudo determination
 var (
-	alwaysNeedsSudo = []string{"apt", "apt-get", "dpkg", "systemctl", "mount", "umount", "modprobe", "sysctl", "azcmagent", "usermod"}
+	alwaysNeedsSudo = []string{"apt", "apt-get", "dpkg", "systemctl", "mount", "umount", "modprobe", "sysctl", "azcmagent", "usermod", "kubectl"}
 	conditionalSudo = []string{"mkdir", "cp", "chmod", "chown", "mv", "tar", "rm", "bash", "install", "ln", "cat"}
 	systemPaths     = []string{"/etc/", "/usr/", "/var/", "/opt/", "/boot/", "/sys/"}
 )

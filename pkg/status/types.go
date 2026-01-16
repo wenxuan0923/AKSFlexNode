@@ -7,11 +7,15 @@ import (
 // NodeStatus represents the current status and health information of the AKS edge node
 type NodeStatus struct {
 	// Component versions
-	KubeletVersion string `json:"kubeletVersion"`
-	RuncVersion    string `json:"runcVersion"`
+	KubeletVersion    string `json:"kubeletVersion"`
+	RuncVersion       string `json:"runcVersion"`
+	ContainerdVersion string `json:"containerdVersion"`
 
 	// Service status
-	KubeletRunning bool `json:"kubeletRunning"`
+	KubeletRunning bool   `json:"kubeletRunning"`
+	KubeletReady   string `json:"kubeletReady"`
+
+	ContainerdRunning bool `json:"containerdRunning"`
 
 	// Azure Arc status
 	ArcStatus ArcStatus `json:"arcStatus"`
