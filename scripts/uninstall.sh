@@ -48,6 +48,7 @@ confirm_uninstall() {
     echo "• Data directory ($DATA_DIR)"
     echo "• Log directory ($LOG_DIR)"
     echo "• Sudo permissions (/etc/sudoers.d/aks-flex-node)"
+    echo "• Azure Arc agent and connection"
     echo ""
     echo -e "${YELLOW}NOTE: This will first run 'aks-flex-node unbootstrap' to clean up cluster and Arc resources.${NC}"
     echo ""
@@ -120,13 +121,18 @@ run_unbootstrap() {
 
     if [[ -d "$azure_config_dir" ]]; then
         log_info "Using Azure CLI credentials from: $azure_config_dir"
-        sudo env AZURE_CONFIG_DIR="$azure_config_dir" "$INSTALL_DIR/aks-flex-node" unbootstrap --config "$config_file" || {
+        
+        # Added TERM=$TERM to ensure the tool knows it can print formatted text
+        # Added 2>&1 to capture Standard Error logs alongside Standard Out
+        sudo env AZURE_CONFIG_DIR="$azure_config_dir" TERM="$TERM" "$INSTALL_DIR/aks-flex-node" unbootstrap --config "$config_file" 2>&1 || {
             log_warning "Unbootstrap failed - this may be expected if resources are already cleaned up"
         }
     else
         log_warning "Azure CLI credentials not found at $azure_config_dir"
         log_info "Attempting unbootstrap without Azure CLI credentials..."
-        sudo "$INSTALL_DIR/aks-flex-node" unbootstrap --config "$config_file" || {
+        
+        # Applied the same fixes here
+        sudo env TERM="$TERM" "$INSTALL_DIR/aks-flex-node" unbootstrap --config "$config_file" 2>&1 || {
             log_warning "Unbootstrap failed - this may be expected if resources are already cleaned up"
         }
     fi
@@ -207,14 +213,55 @@ remove_binary() {
 }
 
 cleanup_arc_agent() {
-    log_info "Checking Azure Arc agent..."
+    log_info "Removing Azure Arc agent..."
 
-    # Note: We don't uninstall the Arc agent by default as it might be used by other services
-    # Users can manually uninstall it if needed
     if command -v azcmagent &> /dev/null; then
-        log_warning "Azure Arc agent is still installed"
-        log_warning "To remove it manually, run: sudo apt remove azcmagent"
-        log_warning "Or follow Microsoft's official uninstall instructions"
+        # First ensure disconnection happened (in case unbootstrap failed)
+        log_info "Ensuring Arc machine is disconnected..."
+        sudo azcmagent disconnect --force-local-only 2>/dev/null || true
+
+        # Stop Arc agent services
+        log_info "Stopping Arc agent services..."
+        sudo systemctl stop himdsd 2>/dev/null || true
+        sudo systemctl stop gcarcservice 2>/dev/null || true
+        sudo systemctl disable himdsd 2>/dev/null || true
+        sudo systemctl disable gcarcservice 2>/dev/null || true
+
+        # Remove Arc agent binaries and files (installed via Microsoft script)
+        log_info "Removing Arc agent binaries and configuration..."
+        sudo rm -f /usr/bin/azcmagent 2>/dev/null || true
+        sudo rm -f /usr/local/bin/azcmagent 2>/dev/null || true
+        sudo rm -f /opt/azcmagent/bin/azcmagent 2>/dev/null || true
+
+        # Clean up Arc directories and configuration
+        sudo rm -rf /var/opt/azcmagent 2>/dev/null || true
+        sudo rm -rf /opt/azcmagent 2>/dev/null || true
+        sudo rm -rf /etc/opt/azcmagent 2>/dev/null || true
+
+        # Remove Arc agent log files
+        sudo rm -rf /var/log/azcmagent 2>/dev/null || true
+        sudo rm -rf /var/log/himds 2>/dev/null || true
+
+        # Remove systemd service files
+        sudo rm -f /lib/systemd/system/himdsd.service 2>/dev/null || true
+        sudo rm -f /lib/systemd/system/gcarcservice.service 2>/dev/null || true
+        sudo rm -f /etc/systemd/system/himdsd.service 2>/dev/null || true
+        sudo rm -f /etc/systemd/system/gcarcservice.service 2>/dev/null || true
+
+        # Remove Guest Configuration files (Arc-specific)
+        sudo rm -rf /var/lib/GuestConfig 2>/dev/null || true
+
+        # Reload systemd
+        sudo systemctl daemon-reload || true
+
+        # Verify removal
+        if command -v azcmagent &> /dev/null; then
+            log_warning "azcmagent command still available after cleanup - manual removal may be required"
+        else
+            log_success "Azure Arc agent removed successfully"
+        fi
+    else
+        log_info "Azure Arc agent not found - already removed or never installed"
     fi
 }
 
@@ -228,12 +275,11 @@ show_completion_message() {
     echo "✅ Configuration and data directories"
     echo "✅ Log files"
     echo "✅ Sudo permissions"
+    echo "✅ Azure Arc agent and connection"
     echo ""
-    echo -e "${YELLOW}What was NOT removed:${NC}"
-    echo "ℹ️  Azure Arc agent (azcmagent) - remove manually if not needed"
-    echo "ℹ️  Azure Arc connection (disconnection handled by 'aks-flex-node unbootstrap')"
+    echo -e "${GREEN}Complete uninstallation finished!${NC}"
     echo ""
-    echo -e "${GREEN}Uninstallation complete!${NC}"
+    echo "The system has been returned to its pre-installation state."
 }
 
 main() {

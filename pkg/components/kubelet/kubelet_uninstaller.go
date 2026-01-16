@@ -37,17 +37,20 @@ func (u *UnInstaller) Execute(ctx context.Context) error {
 
 	// Remove kubelet configuration files
 	kubeletFiles := []string{
-		KubeletDefaultsPath,
-		KubeletServicePath,
-		KubeletContainerdConfig,
-		KubeletConfigPath,
-		KubeletKubeConfig,
-		KubeletBootstrapKubeConfig,
+		kubeletDefaultsPath,
+		kubeletServicePath,
+		kubeletContainerdConfig,
+		kubeletConfigPath,
+		kubeletKubeConfig,
+		kubeletBootstrapKubeConfig,
 	}
 
 	// Remove kubelet configuration directories
 	kubeletDirectories := []string{
-		KubeletServiceDir,
+		kubeletServiceDir,      // /etc/systemd/system/kubelet.service.d
+		kubeletVarDir,          // /var/lib/kubelet
+		kubeletManifestsDir,    // Static pod manifests (kubelet-specific)
+		kubeletVolumePluginDir, // Volume plugins (kubelet-specific)
 	}
 
 	// Remove individual files
@@ -77,9 +80,9 @@ func (u *UnInstaller) Execute(ctx context.Context) error {
 func (u *UnInstaller) IsCompleted(ctx context.Context) bool {
 	// Check critical configuration files
 	criticalFiles := []string{
-		KubeletConfigPath,
-		KubeletKubeConfig,
-		KubeletBootstrapKubeConfig,
+		kubeletConfigPath,
+		kubeletKubeConfig,
+		kubeletBootstrapKubeConfig,
 	}
 
 	for _, file := range criticalFiles {

@@ -205,7 +205,7 @@ func getCNIVersion(cfg *config.Config) string {
 	return DefaultCNIVersion
 }
 
-// CreateBridgeConfig creates bridge CNI configuration for edge nodes (compatible with AKS Cilium)
+// CreateBridgeConfig creates bridge CNI configuration for edge nodes (compatible with BYO Cilium)
 func (i *Installer) createBridgeConfig() error {
 	logrus.Info("Creating bridge CNI configuration for edge node...")
 	configPath := filepath.Join(DefaultCNIConfDir, bridgeConfigFile)

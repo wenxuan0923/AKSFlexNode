@@ -57,35 +57,9 @@ func (i *Installer) Execute(ctx context.Context) error {
 
 // IsCompleted checks if kubelet service has been installed and configured
 func (i *Installer) IsCompleted(ctx context.Context) bool {
-	// Check if all required files exist
-	if !utils.FileExists(KubeletDefaultsPath) {
-		return false
-	}
-	if !utils.FileExists(KubeletServicePath) {
-		return false
-	}
-	if !utils.FileExists(KubeletContainerdConfig) {
-		return false
-	}
-	if !utils.FileExists(KubeletTLSBootstrapConfig) {
-		return false
-	}
-
-	// Check if kubeconfig exists for exec credential authentication
-	if !utils.FileExists(KubeletKubeconfigPath) {
-		return false
-	}
-
-	// Check if Arc token script exists
-	if !utils.FileExists(KubeletTokenScriptPath) {
-		return false
-	}
-
-	// Validate the configuration files have expected content
-	if !i.validateKubeletConfiguration() {
-		return false
-	}
-	return true
+	// enforce reconfiguration every time for kubelet to ensure latest settings
+	// so that any config changes are applied
+	return false
 }
 
 // Validate validates prerequisites for kubelet installation
@@ -103,6 +77,16 @@ func (i *Installer) configure(ctx context.Context) error {
 	if err := i.cleanupExistingConfiguration(); err != nil {
 		i.logger.Warnf("Failed to cleanup existing kubelet configuration: %v", err)
 		// Continue anyway - we'll overwrite the files
+	}
+
+	// Ensure required packages are installed
+	if err := i.ensureRequiredPackages(); err != nil {
+		return fmt.Errorf("failed to install required packages: %w", err)
+	}
+
+	// Create required directories
+	if err := i.createRequiredDirectories(); err != nil {
+		return fmt.Errorf("failed to create required directories: %w", err)
 	}
 
 	// Create kubelet defaults file
@@ -145,12 +129,12 @@ func (i *Installer) cleanupExistingConfiguration() error {
 	// List of files to clean up
 	kubeconfigPath := filepath.Join(i.config.Paths.Kubernetes.ConfigDir, "kubeconfig")
 	filesToClean := []string{
-		KubeletDefaultsPath,
-		KubeletServicePath,
-		KubeletContainerdConfig,
-		KubeletTLSBootstrapConfig,
+		kubeletDefaultsPath,
+		kubeletServicePath,
+		kubeletContainerdConfig,
+		kubeletTLSBootstrapConfig,
 		kubeconfigPath,
-		KubeletTokenScriptPath,
+		kubeletTokenScriptPath,
 	}
 
 	for _, file := range filesToClean {
@@ -165,62 +149,47 @@ func (i *Installer) cleanupExistingConfiguration() error {
 	return nil
 }
 
-// validateKubeletConfiguration validates that kubelet configuration files have expected content
-func (i *Installer) validateKubeletConfiguration() bool {
-	// Validate kubelet defaults file
-	if !i.validateKubeletDefaultsFile() {
-		return false
+// createRequiredDirectories creates directories that kubelet expects to exist
+func (i *Installer) createRequiredDirectories() error {
+	i.logger.Info("Creating required directories for kubelet")
+
+	directories := []string{
+		kubeletManifestsDir,    // For pod manifests
+		kubeletVolumePluginDir, // For volume plugins
+		kubeletVarDir,          // For kubelet data
 	}
 
-	// Validate kubelet service file
-	if !i.validateKubeletServiceFile() {
-		return false
-	}
-
-	return true
-}
-
-// validateFileContent checks if a file contains all expected strings
-func (i *Installer) validateFileContent(filePath string, expectedStrings []string, description string) bool {
-	output, err := utils.RunCommandWithOutput("cat", filePath)
-	if err != nil {
-		i.logger.Debugf("Failed to read %s: %v", description, err)
-		return false
-	}
-
-	for _, expected := range expectedStrings {
-		if !strings.Contains(output, expected) {
-			i.logger.Debugf("Missing expected setting in %s: %s", description, expected)
-			return false
+	for _, dir := range directories {
+		i.logger.Debugf("Creating directory: %s", dir)
+		if err := utils.RunSystemCommand("mkdir", "-p", dir); err != nil {
+			return fmt.Errorf("failed to create directory %s: %w", dir, err)
 		}
 	}
 
-	return true
+	i.logger.Info("Required directories created successfully")
+	return nil
 }
 
-// validateKubeletDefaultsFile checks if the kubelet defaults file has expected content
-func (i *Installer) validateKubeletDefaultsFile() bool {
-	expectedSettings := []string{
-		"KUBELET_NODE_LABELS=",
-		"KUBELET_CONFIG_FILE_FLAGS=",
-		"KUBELET_FLAGS=",
-		"--cgroup-driver=systemd",
-		"--authorization-mode=Webhook",
+// ensureRequiredPackages installs packages required by kubelet (jq for token script, iptables for service)
+func (i *Installer) ensureRequiredPackages() error {
+	packages := []string{"jq", "iptables"}
+
+	i.logger.Info("Checking for required kubelet packages")
+
+	for _, pkg := range packages {
+		if err := utils.RunSystemCommand("which", pkg); err != nil {
+			i.logger.Infof("Installing %s...", pkg)
+			if err := utils.RunSystemCommand("apt", "install", "-y", pkg); err != nil {
+				return fmt.Errorf("failed to install %s: %w", pkg, err)
+			}
+			i.logger.Infof("Successfully installed %s", pkg)
+		} else {
+			i.logger.Debugf("%s is already installed", pkg)
+		}
 	}
 
-	return i.validateFileContent(KubeletDefaultsPath, expectedSettings, "kubelet defaults file")
-}
-
-// validateKubeletServiceFile checks if the kubelet service file has expected content
-func (i *Installer) validateKubeletServiceFile() bool {
-	expectedSettings := []string{
-		"[Unit]",
-		"Description=Kubelet",
-		"ExecStart=/usr/local/bin/kubelet",
-		"WantedBy=multi-user.target",
-	}
-
-	return i.validateFileContent(KubeletServicePath, expectedSettings, "kubelet service file")
+	i.logger.Info("All required kubelet packages are available")
+	return nil
 }
 
 // createKubeletDefaultsFile creates the kubelet defaults configuration file
@@ -257,20 +226,20 @@ KUBELET_FLAGS="\
   --tls-cipher-suites=TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,TLS_RSA_WITH_AES_256_GCM_SHA384,TLS_RSA_WITH_AES_128_GCM_SHA256 \
   "`,
 		strings.Join(labels, ","),
-		utils.MapToEvictionThresholds(i.config.Node.Kubelet.EvictionHard, ","),
-		utils.MapToKeyValuePairs(i.config.Node.Kubelet.KubeReserved, ","),
+		mapToEvictionThresholds(i.config.Node.Kubelet.EvictionHard, ","),
+		mapToKeyValuePairs(i.config.Node.Kubelet.KubeReserved, ","),
 		i.config.Node.Kubelet.ImageGCHighThreshold,
 		i.config.Node.Kubelet.ImageGCLowThreshold,
 		i.config.Node.MaxPods,
 		i.config.Containerd.PauseImage)
 
 	// Ensure /etc/default directory exists
-	if err := utils.RunSystemCommand("mkdir", "-p", EtcDefaultDir); err != nil {
-		return fmt.Errorf("failed to create %s directory: %w", EtcDefaultDir, err)
+	if err := utils.RunSystemCommand("mkdir", "-p", etcDefaultDir); err != nil {
+		return fmt.Errorf("failed to create %s directory: %w", etcDefaultDir, err)
 	}
 
 	// Write kubelet defaults file atomically with proper permissions
-	if err := utils.WriteFileAtomicSystem(KubeletDefaultsPath, []byte(kubeletDefaults), 0644); err != nil {
+	if err := utils.WriteFileAtomicSystem(kubeletDefaultsPath, []byte(kubeletDefaults), 0644); err != nil {
 		return fmt.Errorf("failed to create kubelet defaults file: %w", err)
 	}
 
@@ -280,8 +249,8 @@ KUBELET_FLAGS="\
 // createSystemdDropInFile creates a systemd drop-in file with the given content
 func (i *Installer) createSystemdDropInFile(filePath, content, description string) error {
 	// Ensure kubelet service.d directory exists
-	if err := utils.RunSystemCommand("mkdir", "-p", KubeletServiceDir); err != nil {
-		return fmt.Errorf("failed to create %s directory: %w", KubeletServiceDir, err)
+	if err := utils.RunSystemCommand("mkdir", "-p", kubeletServiceDir); err != nil {
+		return fmt.Errorf("failed to create %s directory: %w", kubeletServiceDir, err)
 	}
 
 	// Write config file atomically with proper permissions
@@ -297,7 +266,7 @@ func (i *Installer) createKubeletContainerdConfig() error {
 	containerdConf := `[Service]
 Environment=KUBELET_CONTAINERD_FLAGS="--runtime-request-timeout=15m --container-runtime-endpoint=unix:///run/containerd/containerd.sock"`
 
-	return i.createSystemdDropInFile(KubeletContainerdConfig, containerdConf, "kubelet containerd config file")
+	return i.createSystemdDropInFile(kubeletContainerdConfig, containerdConf, "kubelet containerd config file")
 }
 
 // createKubeletTLSBootstrapConfig creates the kubelet TLS bootstrap configuration
@@ -305,7 +274,7 @@ func (i *Installer) createKubeletTLSBootstrapConfig() error {
 	tlsBootstrapConf := `[Service]
 Environment=KUBELET_TLS_BOOTSTRAP_FLAGS="--kubeconfig /var/lib/kubelet/kubeconfig"`
 
-	return i.createSystemdDropInFile(KubeletTLSBootstrapConfig, tlsBootstrapConf, "kubelet TLS bootstrap config file")
+	return i.createSystemdDropInFile(kubeletTLSBootstrapConfig, tlsBootstrapConf, "kubelet TLS bootstrap config file")
 }
 
 // createKubeletServiceFile creates the main kubelet systemd service file
@@ -336,7 +305,7 @@ ExecStart=/usr/local/bin/kubelet \
 WantedBy=multi-user.target`
 
 	// Write kubelet service file atomically with proper permissions
-	if err := utils.WriteFileAtomicSystem(KubeletServicePath, []byte(kubeletService), 0644); err != nil {
+	if err := utils.WriteFileAtomicSystem(kubeletServicePath, []byte(kubeletService), 0644); err != nil {
 		return fmt.Errorf("failed to create kubelet service file: %w", err)
 	}
 
@@ -374,20 +343,20 @@ if [ $? -ne 0 ]; then
     exit 255
 fi
 
-curl -s -H Metadata:true -H "Authorization: Basic $CHALLENGE_TOKEN" $TOKEN_URL | jq "$EXECCREDENTIAL"`, AKSServiceResourceID)
+curl -s -H Metadata:true -H "Authorization: Basic $CHALLENGE_TOKEN" $TOKEN_URL | jq "$EXECCREDENTIAL"`, aksServiceResourceID)
 
 	// Ensure /var/lib/kubelet directory exists
-	if err := utils.RunSystemCommand("mkdir", "-p", KubeletVarDir); err != nil {
+	if err := utils.RunSystemCommand("mkdir", "-p", kubeletVarDir); err != nil {
 		return fmt.Errorf("failed to create kubelet var directory: %w", err)
 	}
 
 	// Write token script atomically with executable permissions
-	if err := utils.WriteFileAtomicSystem(KubeletTokenScriptPath, []byte(tokenScript), 0755); err != nil {
+	if err := utils.WriteFileAtomicSystem(kubeletTokenScriptPath, []byte(tokenScript), 0755); err != nil {
 		return fmt.Errorf("failed to create Arc token script: %w", err)
 	}
 
 	// Ensure the script has executable permissions (explicit chmod as backup)
-	if err := utils.RunSystemCommand("chmod", "755", KubeletTokenScriptPath); err != nil {
+	if err := utils.RunSystemCommand("chmod", "755", kubeletTokenScriptPath); err != nil {
 		return fmt.Errorf("failed to set executable permissions on Arc token script: %w", err)
 	}
 
@@ -444,7 +413,7 @@ users:
 		i.config.Azure.TargetCluster.Name)
 
 	// Write kubeconfig file to the correct location for kubelet
-	if err := utils.WriteFileAtomicSystem(KubeletKubeconfigPath, []byte(kubeconfigContent), 0600); err != nil {
+	if err := utils.WriteFileAtomicSystem(kubeletKubeconfigPath, []byte(kubeconfigContent), 0600); err != nil {
 		return fmt.Errorf("failed to create kubeconfig file: %w", err)
 	}
 
@@ -535,4 +504,22 @@ func (i *Installer) extractClusterInfo(kubeconfigData []byte) (string, string, e
 	// The field contains raw certificate bytes, so we need to encode them
 	caCertDataB64 := base64.StdEncoding.EncodeToString(cluster.CertificateAuthorityData)
 	return cluster.Server, caCertDataB64, nil
+}
+
+// mapToKeyValuePairs converts a map to key=value pairs joined by separator
+func mapToKeyValuePairs(m map[string]string, separator string) string {
+	pairs := make([]string, 0, len(m))
+	for k, v := range m {
+		pairs = append(pairs, fmt.Sprintf("%s=%s", k, v))
+	}
+	return strings.Join(pairs, separator)
+}
+
+// mapToEvictionThresholds converts a map to key<value pairs for kubelet eviction thresholds
+func mapToEvictionThresholds(m map[string]string, separator string) string {
+	pairs := make([]string, 0, len(m))
+	for k, v := range m {
+		pairs = append(pairs, fmt.Sprintf("%s<%s", k, v))
+	}
+	return strings.Join(pairs, separator)
 }

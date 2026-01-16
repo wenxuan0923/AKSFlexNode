@@ -120,7 +120,7 @@ jobs:
 
             **Quick install (Ubuntu 22.04/24.04):**
             ```bash
-            curl -fsSL https://raw.githubusercontent.com/Azure/AKSFlexNode/main/scripts/install.sh | sudo bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/${{ steps.version.outputs.VERSION }}/scripts/install.sh | sudo bash
             ```
 
             **Manual installation:**

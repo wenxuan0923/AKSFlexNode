@@ -2,23 +2,28 @@ package kubelet
 
 const (
 	// System directories
-	EtcDefaultDir     = "/etc/default"
-	KubeletServiceDir = "/etc/systemd/system/kubelet.service.d"
+	etcDefaultDir     = "/etc/default"
+	kubeletServiceDir = "/etc/systemd/system/kubelet.service.d"
+	etcKubernetesDir  = "/etc/kubernetes"
+
+	// Kubelet-specific directories
+	kubeletManifestsDir    = "/etc/kubernetes/manifests"
+	kubeletVolumePluginDir = "/etc/kubernetes/volumeplugins"
 
 	// Configuration file paths
-	KubeletDefaultsPath       = "/etc/default/kubelet"
-	KubeletServicePath        = "/etc/systemd/system/kubelet.service"
-	KubeletContainerdConfig   = "/etc/systemd/system/kubelet.service.d/10-containerd.conf"
-	KubeletTLSBootstrapConfig = "/etc/systemd/system/kubelet.service.d/10-tlsbootstrap.conf"
+	kubeletDefaultsPath       = "/etc/default/kubelet"
+	kubeletServicePath        = "/etc/systemd/system/kubelet.service"
+	kubeletContainerdConfig   = "/etc/systemd/system/kubelet.service.d/10-containerd.conf"
+	kubeletTLSBootstrapConfig = "/etc/systemd/system/kubelet.service.d/10-tlsbootstrap.conf"
 
 	// Runtime configuration paths
-	KubeletConfigPath          = "/var/lib/kubelet/config.yaml"
-	KubeletKubeConfig          = "/etc/kubernetes/kubelet.conf"
-	KubeletBootstrapKubeConfig = "/etc/kubernetes/bootstrap-kubelet.conf"
-	KubeletVarDir              = "/var/lib/kubelet"
-	KubeletKubeconfigPath      = "/var/lib/kubelet/kubeconfig"
-	KubeletTokenScriptPath     = "/var/lib/kubelet/token.sh"
+	kubeletConfigPath          = "/var/lib/kubelet/config.yaml"
+	kubeletKubeConfig          = "/etc/kubernetes/kubelet.conf"
+	kubeletBootstrapKubeConfig = "/etc/kubernetes/bootstrap-kubelet.conf"
+	kubeletVarDir              = "/var/lib/kubelet"
+	kubeletKubeconfigPath      = "/var/lib/kubelet/kubeconfig"
+	kubeletTokenScriptPath     = "/var/lib/kubelet/token.sh"
 
 	// Azure resource identifiers
-	AKSServiceResourceID = "6dae42f8-4368-4678-94ff-3960e28e3630"
+	aksServiceResourceID = "6dae42f8-4368-4678-94ff-3960e28e3630"
 )

@@ -95,27 +95,6 @@ func IsServiceActive(serviceName string) bool {
 	return strings.TrimSpace(output) == "active"
 }
 
-// GetServiceStatus returns the status of a systemd service (active, inactive, failed, etc.)
-func GetServiceStatus(serviceName string) string {
-	output, err := RunCommandWithOutput("systemctl", "is-active", serviceName)
-	if err != nil {
-		return "unknown"
-	}
-	return strings.TrimSpace(output)
-}
-
-// IsServiceHealthyStopped checks if a service is stopped in a healthy way (not failed)
-func IsServiceHealthyStopped(serviceName string) bool {
-	// Check if service is not active
-	if IsServiceActive(serviceName) {
-		return false
-	}
-
-	// Check the service status to ensure it's properly stopped (not failed)
-	status := GetServiceStatus(serviceName)
-	return status == "inactive" || status == "unknown"
-}
-
 // ServiceExists checks if a systemd service unit file exists
 func ServiceExists(serviceName string) bool {
 	err := RunSystemCommand("systemctl", "list-unit-files", serviceName+".service")
@@ -132,11 +111,6 @@ func DisableService(serviceName string) error {
 	return RunSystemCommand("systemctl", "disable", serviceName)
 }
 
-// EnableService enables a systemd service
-func EnableService(serviceName string) error {
-	return RunSystemCommand("systemctl", "enable", serviceName)
-}
-
 // EnableAndStartService enables and starts a systemd service
 func EnableAndStartService(serviceName string) error {
 	return RunSystemCommand("systemctl", "enable", "--now", serviceName)
@@ -150,19 +124,6 @@ func RestartService(serviceName string) error {
 // ReloadSystemd reloads systemd daemon configuration
 func ReloadSystemd() error {
 	return RunSystemCommand("systemctl", "daemon-reload")
-}
-
-// IsKubeletActive checks if the kubelet service exists and is active
-func IsKubeletActive() bool {
-	// First check if kubelet service exists
-	_, err := RunCommandWithOutput("systemctl", "cat", "kubelet")
-	if err != nil {
-		// Service doesn't exist
-		return false
-	}
-
-	// Service exists, check if it's active
-	return IsServiceActive("kubelet")
 }
 
 // ignorableCleanupErrors defines patterns for errors that should be ignored during cleanup operations
@@ -323,20 +284,7 @@ func WriteFileAtomicSystem(filename string, data []byte, perm os.FileMode) error
 	return WriteFileAtomic(filename, data, perm)
 }
 
-// CreateAzureCliCommand creates an exec.Cmd for Azure CLI with sudo handling
-func CreateAzureCliCommand(ctx context.Context, args ...string) *exec.Cmd {
-	actualUser := os.Getenv("SUDO_USER")
-	if actualUser != "" {
-		// We're running under sudo, so run the az command as the original user
-		cmdArgs := append([]string{"-u", actualUser, "az"}, args...)
-		cmd := exec.CommandContext(ctx, "sudo", cmdArgs...)
-		return cmd
-	}
-	// Not running under sudo, run normally
-	cmd := exec.CommandContext(ctx, "az", args...)
-	return cmd
-}
-
+// WaitForService waits until a systemd service is active or timeout occurs
 func WaitForService(serviceName string, timeout time.Duration, logger *logrus.Logger) error {
 	logger.Debugf("Waiting for service %s to be active (timeout: %v)", serviceName, timeout)
 
@@ -363,24 +311,6 @@ func WaitForService(serviceName string, timeout time.Duration, logger *logrus.Lo
 			}
 		}
 	}
-}
-
-// MapToKeyValuePairs converts a map to key=value pairs joined by separator
-func MapToKeyValuePairs(m map[string]string, separator string) string {
-	pairs := make([]string, 0, len(m))
-	for k, v := range m {
-		pairs = append(pairs, fmt.Sprintf("%s=%s", k, v))
-	}
-	return strings.Join(pairs, separator)
-}
-
-// MapToEvictionThresholds converts a map to key<value pairs for kubelet eviction thresholds
-func MapToEvictionThresholds(m map[string]string, separator string) string {
-	pairs := make([]string, 0, len(m))
-	for k, v := range m {
-		pairs = append(pairs, fmt.Sprintf("%s<%s", k, v))
-	}
-	return strings.Join(pairs, separator)
 }
 
 // DownloadFile downloads a file from URL to destination
@@ -436,23 +366,6 @@ func BinaryExists(binaryName string) bool {
 	return err == nil
 }
 
-// RemovePackages removes multiple packages using apt-get with error collection
-func RemovePackages(packages []string, logger *logrus.Logger) []error {
-	var errors []error
-
-	for _, pkg := range packages {
-		logger.Infof("Removing package: %s", pkg)
-		if err := RunSystemCommand("apt-get", "remove", "-y", pkg); err != nil {
-			logger.Warnf("Failed to remove package %s: %v", pkg, err)
-			errors = append(errors, fmt.Errorf("failed to remove package %s: %w", pkg, err))
-		} else {
-			logger.Infof("Successfully removed package: %s", pkg)
-		}
-	}
-
-	return errors
-}
-
 // RemoveFiles removes multiple files, continuing on errors and logging results
 func RemoveFiles(files []string, logger *logrus.Logger) []error {
 	var errors []error
@@ -492,23 +405,6 @@ func RemoveDirectories(directories []string, logger *logrus.Logger) []error {
 	}
 
 	return errors
-}
-
-// CleanPackageCache runs apt package cleanup commands
-func CleanPackageCache(logger *logrus.Logger) {
-	logger.Info("Cleaning up package cache")
-
-	if err := RunSystemCommand("apt-get", "autoremove", "-y"); err != nil {
-		logger.Warnf("Failed to autoremove packages: %v", err)
-	}
-
-	if err := RunSystemCommand("apt-get", "autoclean"); err != nil {
-		logger.Warnf("Failed to autoclean packages: %v", err)
-	}
-
-	if err := RunSystemCommand("apt-get", "update"); err != nil {
-		logger.Warnf("Failed to update package cache: %v", err)
-	}
 }
 
 // GetArc retrieves the system architecture in a format matching reference scripts

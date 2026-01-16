@@ -159,7 +159,7 @@ aks-flex-node agent --config /etc/aks-flex-node/config.json
 cat /var/log/aks-flex-node/aks-flex-node.log
 
 # Option 2: Using systemd service
-sudo systemctl enable aks-flex-node-agent.service; sudo systemctl start aks-flex-node-agent
+sudo systemctl enable --now aks-flex-node-agent
 journalctl -u aks-flex-node-agent --since "1 minutes ago" -f
 
 ```
