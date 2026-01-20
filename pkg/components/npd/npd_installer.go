@@ -56,7 +56,7 @@ func (i *Installer) installNpd() error {
 		return fmt.Errorf("failed to clean up existing NPD temp directory %s: %w", tempDir, err)
 	}
 	defer func() {
-		if err := utils.RunCleanupCommand(tempDir); err != nil {
+		if err := utils.RunSystemCommand("bash", "-c", fmt.Sprintf("rm -rf %s", tempDir)); err != nil {
 			logrus.Warnf("Failed to clean up temp directory %s: %v", tempDir, err)
 		}
 	}()
