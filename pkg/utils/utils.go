@@ -111,6 +111,11 @@ func DisableService(serviceName string) error {
 	return RunSystemCommand("systemctl", "disable", serviceName)
 }
 
+// EnableService enables a systemd service
+func EnableService(serviceName string) error {
+	return RunSystemCommand("systemctl", "enable", serviceName)
+}
+
 // EnableAndStartService enables and starts a systemd service
 func EnableAndStartService(serviceName string) error {
 	return RunSystemCommand("systemctl", "enable", "--now", serviceName)

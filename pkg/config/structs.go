@@ -24,6 +24,7 @@ type AzureConfig struct {
 	Cloud            string                  `json:"cloud"`                      // Azure cloud environment (defaults to AzurePublicCloud)
 	ServicePrincipal *ServicePrincipalConfig `json:"servicePrincipal,omitempty"` // Optional service principal authentication
 	Arc              *ArcConfig              `json:"arc"`                        // Azure Arc machine configuration
+	VPNGateway       *VPNConfig              `json:"vpnGateway"`                 // Azure VPN gateway configuration for P2S connectivity
 	TargetCluster    *TargetClusterConfig    `json:"targetCluster"`              // Target AKS cluster configuration
 }
 
@@ -51,6 +52,13 @@ type ArcConfig struct {
 	Tags          map[string]string `json:"tags"`          // Tags to apply to the Arc machine
 	ResourceGroup string            `json:"resourceGroup"` // Azure resource group for Arc machine
 	Location      string            `json:"location"`      // Azure region for Arc machine
+}
+
+// VPNConfig holds configuration settings for the VPN gateway.
+type VPNConfig struct {
+	Enabled        bool   `json:"enabled"`
+	P2SGatewayCIDR string `json:"p2sGatewayCIDR"`
+	GatewaySKU     string `json:"gatewaySKU"`
 }
 
 // AgentConfig holds agent-specific operational configuration.
@@ -161,6 +169,14 @@ func (cfg *Config) GetTargetClusterResourceGroup() string {
 	return ""
 }
 
+// GetTargetClusterNodeResourceGroup returns the target AKS cluster node resource group from configuration
+func (cfg *Config) GetTargetClusterNodeResourceGroup() string {
+	if cfg.Azure.TargetCluster != nil && cfg.Azure.TargetCluster.NodeResourceGroup != "" {
+		return cfg.Azure.TargetCluster.NodeResourceGroup
+	}
+	return ""
+}
+
 // GetTargetClusterLocation returns the target AKS cluster location from configuration
 func (cfg *Config) GetTargetClusterLocation() string {
 	if cfg.Azure.TargetCluster != nil && cfg.Azure.TargetCluster.Location != "" {
@@ -215,4 +231,13 @@ func (cfg *Config) GetTenantID() string {
 // GetKubernetesVersion returns the Kubernetes version from configuration
 func (cfg *Config) GetKubernetesVersion() string {
 	return cfg.Kubernetes.Version
+}
+
+// IsVPNGatewayEnabled checks if VPN Gateway is enabled in the configuration
+func (cfg *Config) IsVPNGatewayEnabled() bool {
+	if cfg.Azure.VPNGateway != nil &&
+		cfg.Azure.VPNGateway.Enabled {
+		return true
+	}
+	return false
 }
