@@ -470,6 +470,13 @@ func (i *Installer) configureVPNNetworking(ctx context.Context, vnetInfo vnetRes
 		}
 	}
 
+	// Add route for AKS pod network (required for flex pod to aks pod communication)
+	// This enables Flex node pods to reach AKS cluster pods (like DNS services)
+	i.logger.Infof("Adding route for AKS pod network: %s via %s dev %s", podCIDR, gatewayIP, vpnInterface)
+	if err := i.addIPRoute(podCIDR, gatewayIP, vpnInterface); err != nil {
+		return fmt.Errorf("failed to add route for AKS pod CIDR %s: %w", podCIDR, err)
+	}
+
 	// Add iptables MASQUERADE rules for pod-to-AKS communication for all VNet CIDRs
 	for _, vnetCIDR := range aksVNetCIDRs {
 		i.logger.Infof("Adding iptables MASQUERADE rule: %s -> %s via %s", podCIDR, vnetCIDR, vpnInterface)
@@ -488,7 +495,7 @@ func (i *Installer) getNetworkConfiguration(vnetInfo vnetResourceInfo) (string, 
 	if i.config.Azure.VPNGateway == nil || i.config.Azure.VPNGateway.PodCIDR == "" {
 		return "", nil, fmt.Errorf("pod CIDR is required in VPN configuration when enabled, please set it")
 	}
-	podCIDR := i.config.Azure.VPNGateway.PodCIDR
+	podCIDR := i.config.GetVPNGatewayPodCIDR()
 
 	// Extract all AKS VNet CIDRs from the already discovered VNet info
 	// Using all VNet CIDRs ensures we can reach all subnets including AKS nodes

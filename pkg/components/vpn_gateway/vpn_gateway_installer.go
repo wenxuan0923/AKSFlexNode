@@ -50,6 +50,77 @@ func (i *Installer) Validate(ctx context.Context) error {
 		return fmt.Errorf("pod CIDR is not configured - this is required for VPN network routing")
 	}
 
+	if i.config.Azure.VPNGateway.VNetID == "" {
+		return fmt.Errorf("VNet ID for VPN Gateway is not configured")
+	}
+
+	// Validate that VNet ID is a proper Azure resource ID
+	if err := i.validateAzureResourceID(i.config.Azure.VPNGateway.VNetID, "virtualNetworks"); err != nil {
+		return fmt.Errorf("invalid VNet ID: %w", err)
+	}
+
+	return nil
+}
+
+// validateAzureResourceID validates that the provided resource ID follows Azure resource ID format
+// Expected format: /subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/{resourceProvider}/{resourceType}/{resourceName}
+func (i *Installer) validateAzureResourceID(resourceID, expectedResourceType string) error {
+	if resourceID == "" {
+		return fmt.Errorf("resource ID cannot be empty")
+	}
+
+	// Azure resource IDs must start with /subscriptions/
+	if !strings.HasPrefix(resourceID, "/subscriptions/") {
+		return fmt.Errorf("resource ID must start with '/subscriptions/', got: %s", resourceID)
+	}
+
+	// Split the resource ID into parts
+	parts := strings.Split(resourceID, "/")
+
+	// Azure resource ID should have at least 9 parts:
+	// ["", "subscriptions", "{subscriptionId}", "resourceGroups", "{resourceGroupName}", "providers", "{resourceProvider}", "{resourceType}", "{resourceName}"]
+	if len(parts) < 9 {
+		return fmt.Errorf("resource ID has invalid format, expected at least 9 segments, got %d: %s", len(parts), resourceID)
+	}
+
+	// Validate the fixed parts of the resource ID format
+	expectedSegments := map[int]string{
+		1: "subscriptions",
+		3: "resourceGroups",
+		5: "providers",
+	}
+
+	for index, expectedValue := range expectedSegments {
+		if index >= len(parts) || parts[index] != expectedValue {
+			return fmt.Errorf("resource ID segment %d should be '%s', got '%s': %s", index, expectedValue, parts[index], resourceID)
+		}
+	}
+
+	// Validate that required segments are not empty
+	requiredSegments := map[int]string{
+		2: "subscription ID",
+		4: "resource group name",
+		6: "resource provider",
+		7: "resource type",
+		8: "resource name",
+	}
+
+	for index, segmentName := range requiredSegments {
+		if index >= len(parts) || strings.TrimSpace(parts[index]) == "" {
+			return fmt.Errorf("resource ID %s cannot be empty: %s", segmentName, resourceID)
+		}
+	}
+
+	// Validate the resource type matches expected type
+	if expectedResourceType != "" && parts[7] != expectedResourceType {
+		return fmt.Errorf("expected resource type '%s', got '%s': %s", expectedResourceType, parts[7], resourceID)
+	}
+
+	// Validate that it's a Microsoft.Network provider for VNet
+	if expectedResourceType == "virtualNetworks" && parts[6] != "Microsoft.Network" {
+		return fmt.Errorf("VNet resource must use Microsoft.Network provider, got '%s': %s", parts[6], resourceID)
+	}
+
 	return nil
 }
 

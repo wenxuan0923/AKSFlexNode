@@ -9,6 +9,7 @@ import (
 	"go.goms.io/aks/AKSFlexNode/pkg/components/cni"
 	"go.goms.io/aks/AKSFlexNode/pkg/components/containerd"
 	"go.goms.io/aks/AKSFlexNode/pkg/components/kube_binaries"
+	"go.goms.io/aks/AKSFlexNode/pkg/components/kube_proxy"
 	"go.goms.io/aks/AKSFlexNode/pkg/components/kubelet"
 	"go.goms.io/aks/AKSFlexNode/pkg/components/npd"
 	"go.goms.io/aks/AKSFlexNode/pkg/components/runc"
@@ -43,6 +44,7 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) (*ExecutionResult, error) 
 		kube_binaries.NewInstaller(b.logger),        // Install k8s binaries
 		cni.NewInstaller(b.logger),                  // Setup CNI (after container runtime)
 		kubelet.NewInstaller(b.logger),              // Configure kubelet service with Arc MSI auth
+		kube_proxy.NewInstaller(b.logger),           // Install and configure kube-proxy
 		services.NewInstaller(b.logger),             // Start services
 		npd.NewInstaller(b.logger),                  // Install Node Problem Detector
 	}
@@ -55,6 +57,7 @@ func (b *Bootstrapper) Unbootstrap(ctx context.Context) (*ExecutionResult, error
 	steps := []Executor{
 		npd.NewUnInstaller(b.logger),                  // Uninstall Node Problem Detector
 		services.NewUnInstaller(b.logger),             // Stop services first
+		kube_proxy.NewUnInstaller(b.logger),           // Uninstall kube-proxy
 		kubelet.NewUnInstaller(b.logger),              // Clean kubelet configuration
 		cni.NewUnInstaller(b.logger),                  // Clean CNI configs
 		kube_binaries.NewUnInstaller(b.logger),        // Uninstall k8s binaries

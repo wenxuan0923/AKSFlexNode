@@ -208,6 +208,8 @@ func (i *Installer) createKubeletDefaultsFile() error {
 		"--authorization-mode=Webhook",
 		"--cgroup-driver=systemd",
 		"--cgroups-per-qos=true",
+		"--cluster-dns=10.0.0.10",
+		"--cluster-domain=cluster.local",
 		"--enforce-node-allocatable=pods",
 		"--event-qps=0",
 		fmt.Sprintf("--eviction-hard=%s", mapToEvictionThresholds(i.config.Node.Kubelet.EvictionHard, ",")),
@@ -430,7 +432,7 @@ users:
 		i.config.Azure.TargetCluster.Name)
 
 	// Write kubeconfig file to the correct location for kubelet
-	if err := utils.WriteFileAtomicSystem(kubeletKubeconfigPath, []byte(kubeconfigContent), 0600); err != nil {
+	if err := utils.WriteFileAtomicSystem(KubeletKubeconfigPath, []byte(kubeconfigContent), 0600); err != nil {
 		return fmt.Errorf("failed to create kubeconfig file: %w", err)
 	}
 

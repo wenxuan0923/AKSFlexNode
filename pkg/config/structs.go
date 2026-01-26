@@ -120,7 +120,6 @@ type KubernetesPathsConfig struct {
 // CNIConfig holds configuration settings for CNI plugins and networking
 type CNIConfig struct {
 	Version string `json:"version"`
-	Mode    string `json:"mode,omitempty"` // "bridge", "none" (default: "bridge")
 }
 
 // NPDConfig holds configuration settings for the Node Problem Detector (NPD).
@@ -245,18 +244,18 @@ func (cfg *Config) IsVPNGatewayEnabled() bool {
 	return false
 }
 
-// GetCNIMode returns the CNI mode (bridge, none)
-func (cfg *Config) GetCNIMode() string {
-	if cfg.CNI.Mode != "" {
-		return cfg.CNI.Mode
-	}
-	return "bridge" // default to bridge
-}
-
 // GetVPNGatewayVNetID returns the VNet ID for the VPN Gateway from configuration
 func (cfg *Config) GetVPNGatewayVNetID() string {
 	if cfg.Azure.VPNGateway != nil {
 		return cfg.Azure.VPNGateway.VNetID
+	}
+	return ""
+}
+
+// GetVPNGatewayPodCIDR returns the Pod CIDR for the VPN Gateway from configuration
+func (cfg *Config) GetVPNGatewayPodCIDR() string {
+	if cfg.Azure.VPNGateway != nil {
+		return cfg.Azure.VPNGateway.PodCIDR
 	}
 	return ""
 }

@@ -60,11 +60,11 @@ func (i *Installer) Execute(ctx context.Context) error {
 
 	// Create cni configuration for edge node
 	i.logger.Info("Step 3: Creating CNI configuration")
-	if err := i.createCNIConfig(); err != nil {
+	// Always use bridge mode which is compatible with BYO Cilium
+	if err := i.createBridgeConfig(); err != nil {
 		i.logger.Errorf("Bridge configuration creation failed: %v", err)
 		return fmt.Errorf("failed to create bridge config: %w", err)
 	}
-	i.logger.Info("Bridge configuration created successfully")
 
 	i.logger.Info("CNI setup completed successfully")
 	return nil
@@ -85,20 +85,6 @@ func (i *Installer) IsCompleted(ctx context.Context) bool {
 		pluginPath := filepath.Join(DefaultCNIBinDir, plugin)
 		if !utils.FileExistsAndValid(pluginPath) {
 			i.logger.Debugf("CNI plugin not found: %s", plugin)
-			return false
-		}
-	}
-
-	// Validate Step 3: Network configuration based on CNI mode
-	mode := i.config.GetCNIMode()
-
-	if mode == "none" {
-		i.logger.Debug("CNI mode set to 'none', skipping network config validation")
-	} else {
-		// For bridge mode (or any other mode defaulting to bridge)
-		configPath := filepath.Join(DefaultCNIConfDir, bridgeConfigFile)
-		if !utils.FileExistsAndValid(configPath) {
-			i.logger.Debug("Bridge configuration file not found")
 			return false
 		}
 	}
@@ -214,24 +200,6 @@ func getCNIVersion(cfg *config.Config) string {
 		return cfg.CNI.Version
 	}
 	return defaultCNIVersion
-}
-
-// createCNIConfig creates network CNI configuration for edge nodes
-func (i *Installer) createCNIConfig() error {
-	mode := i.config.GetCNIMode()
-
-	if mode == "none" {
-		i.logger.Info("CNI mode set to 'none', skipping network configuration")
-		return nil
-	}
-
-	// For all other modes (including unknown), use bridge as default
-	if mode != "bridge" {
-		i.logger.Warnf("Unknown CNI mode '%s', defaulting to bridge", mode)
-	}
-
-	logrus.Info("Creating bridge CNI configuration for edge node...")
-	return i.createBridgeConfig()
 }
 
 // createBridgeConfig creates the traditional bridge CNI configuration
