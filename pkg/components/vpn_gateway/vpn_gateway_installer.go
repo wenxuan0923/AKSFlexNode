@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/containerservice/armcontainerservice/v5"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork/v4"
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/sirupsen/logrus"
@@ -22,12 +21,10 @@ import (
 type Installer struct {
 	config         *config.Config
 	logger         *logrus.Logger
-	aksVnetClient  *armnetwork.VirtualNetworksClient
 	vnetClient     *armnetwork.VirtualNetworksClient
 	subnetsClient  *armnetwork.SubnetsClient
 	vgwClient      *armnetwork.VirtualNetworkGatewaysClient
 	publicIPClient *armnetwork.PublicIPAddressesClient
-	apClient       *armcontainerservice.AgentPoolsClient
 }
 
 // NewInstaller creates a new VPN Gateway installer
@@ -47,6 +44,10 @@ func (i *Installer) Validate(ctx context.Context) error {
 
 	if i.config.Azure.VPNGateway.P2SGatewayCIDR == "" {
 		return fmt.Errorf("P2S Gateway CIDR is not configured")
+	}
+
+	if i.config.Azure.VPNGateway.PodCIDR == "" {
+		return fmt.Errorf("pod CIDR is not configured - this is required for VPN network routing")
 	}
 
 	return nil
@@ -74,33 +75,19 @@ type vnetResourceInfo struct {
 func (i *Installer) Execute(ctx context.Context) error {
 	i.logger.Info("Starting VPN Gateway setup for bootstrap process")
 
-	// Set up AKS clients
-	if err := i.setUpAKSClients(ctx); err != nil {
+	// Set up Azure clients
+	if err := i.setUpClients(ctx); err != nil {
 		i.logger.Errorf("Failed to set up Azure clients: %v", err)
 		return fmt.Errorf("vpn gateway setup failed at client setup: %w", err)
 	}
 
 	// Discover the VNet used by AKS cluster nodes - it can be either BYO VNet or AKS managed VNet
 	// The VPN Gateway will be created in this VNet to establish connectivity between the flex node and AKS cluster nodes
-	vnet, err := i.getAKSNodeVNet(ctx)
+	vnetInfo, err := i.getNodeVNet(ctx)
 	if err != nil {
 		i.logger.Errorf("Failed to get AKS managed VNet: %v", err)
 		return fmt.Errorf("vpn gateway setup failed at VNet discovery: %w", err)
 	}
-
-	vnetInfo := vnetResourceInfo{
-		vnetID:            to.String(vnet.ID),
-		location:          to.String(vnet.Location),
-		resourceGroupName: getResourceGroupFromResourceID(to.String(vnet.ID)),
-		subscriptionID:    getSubscriptionIDFromResourceID(to.String(vnet.ID)),
-		vnet:              vnet,
-	}
-
-	// // Set up Network clients using vnet subscription ID
-	// if err := i.setUpNetClients(ctx, vnetInfo); err != nil {
-	// 	i.logger.Errorf("Failed to set up Azure Network clients: %v", err)
-	// 	return fmt.Errorf("vpn gateway setup failed at network client setup: %w", err)
-	// }
 
 	// Provision VPN Gateway in the AKS Node VNet
 	_, err = i.provisionGateway(ctx, vnetInfo)
@@ -109,77 +96,74 @@ func (i *Installer) Execute(ctx context.Context) error {
 		return fmt.Errorf("vpn gateway setup failed at gateway provisioning: %w", err)
 	}
 
-	// Setup VPN Gateway certificates (root and client)
-	i.logger.Info("Setting up VPN certificates")
-	if err := i.setupCertificates(ctx, vnetInfo); err != nil {
-		i.logger.Errorf("Failed to setup certificates: %v", err)
-		return fmt.Errorf("vpn gateway setup failed at certificate setup: %w", err)
-	}
-	i.logger.Info("VPN certificates setup completed")
+	// Check if VPN connection is already working before setting up certificates
+	if i.isVPNConnected() {
+		i.logger.Info("VPN connection is already established, skipping certificate setup and connection establishment")
+	} else {
+		// Setup VPN Gateway certificates (root and client)
+		i.logger.Info("Setting up VPN certificates")
+		if err := i.setupCertificates(ctx, vnetInfo); err != nil {
+			i.logger.Errorf("Failed to setup certificates: %v", err)
+			return fmt.Errorf("vpn gateway setup failed at certificate setup: %w", err)
+		}
+		i.logger.Info("VPN certificates setup completed")
 
-	// Download VPN configuration
-	i.logger.Info("Downloading VPN client configuration")
-	configPath, err := i.downloadVPNConfig(ctx, vnetInfo)
-	if err != nil {
-		i.logger.Errorf("Failed to download VPN configuration: %v", err)
-		return fmt.Errorf("vpn gateway setup failed at config download: %w", err)
-	}
-	i.logger.Infof("VPN configuration downloaded to: %s", configPath)
+		// Download VPN configuration
+		i.logger.Info("Downloading VPN client configuration")
+		configPath, err := i.downloadVPNConfig(ctx, vnetInfo)
+		if err != nil {
+			i.logger.Errorf("Failed to download VPN configuration: %v", err)
+			return fmt.Errorf("vpn gateway setup failed at config download: %w", err)
+		}
+		i.logger.Infof("VPN configuration downloaded to: %s", configPath)
 
-	// Establish VPN connection using the downloaded configuration
-	i.logger.Info("Establishing VPN connection")
-	connected, err := i.establishVPNConnection(ctx, configPath)
-	if err != nil {
-		i.logger.Errorf("Failed to establish VPN connection: %v", err)
-		return fmt.Errorf("vpn gateway setup failed at connection establishment: %w", err)
-	}
-
-	if connected {
+		// Establish VPN connection using the downloaded configuration
+		i.logger.Info("Establishing VPN connection")
+		connected, err := i.establishVPNConnection(ctx, configPath)
+		if err != nil {
+			i.logger.Errorf("Failed to establish VPN connection: %v", err)
+			return fmt.Errorf("vpn gateway setup failed at connection establishment: %w", err)
+		}
+		if !connected {
+			return fmt.Errorf("vpn gateway setup failed: VPN connection could not be established")
+		}
 		i.logger.Info("VPN connection established successfully")
 	}
+
+	// Always configure network routes and iptables rules
+	i.logger.Info("Configuring VPN network routing")
+	if err := i.configureVPNNetworking(ctx, vnetInfo); err != nil {
+		i.logger.Errorf("Failed to configure VPN networking: %v", err)
+		return fmt.Errorf("vpn gateway setup failed at network configuration: %w", err)
+	}
+	i.logger.Info("VPN networking configuration completed")
 
 	i.logger.Info("VPN Gateway setup completed successfully")
 	return nil
 }
 
 // setUpAKSClients sets up Azure Container Service clients using the target cluster subscription ID
-func (i *Installer) setUpAKSClients(ctx context.Context) error {
+func (i *Installer) setUpClients(ctx context.Context) error {
 	cred, err := auth.NewAuthProvider().UserCredential(config.GetConfig())
 	if err != nil {
 		return fmt.Errorf("failed to get authentication credential: %w", err)
 	}
 
-	clusterSubID := i.config.GetTargetClusterSubscriptionID()
-	aksClientFactory, err := armcontainerservice.NewClientFactory(clusterSubID, cred, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create Azure Container Service client factory: %w", err)
+	vnetID := i.config.GetVPNGatewayVNetID()
+	if vnetID == "" {
+		return fmt.Errorf("failed to get VNet ID from configuration")
 	}
+	vnetSub := getSubscriptionIDFromResourceID(vnetID)
 
-	netClientFactory, err := armnetwork.NewClientFactory(clusterSubID, cred, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create Azure Network client factory: %w", err)
-	}
-
-	i.apClient = aksClientFactory.NewAgentPoolsClient()
-	i.aksVnetClient = netClientFactory.NewVirtualNetworksClient()
-	return nil
-}
-
-// setUpNetClients sets up Azure Network clients using the provided net subscription ID
-func (i *Installer) setUpNetClients(ctx context.Context, vnetSubID string) error {
-	cred, err := auth.NewAuthProvider().UserCredential(config.GetConfig())
-	if err != nil {
-		return fmt.Errorf("failed to get authentication credential: %w", err)
-	}
-
-	netClientFactory, err := armnetwork.NewClientFactory(vnetSubID, cred, nil)
+	clientFactory, err := armnetwork.NewClientFactory(vnetSub, cred, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create Azure Network client factory: %w", err)
 	}
-	i.vnetClient = netClientFactory.NewVirtualNetworksClient()
-	i.subnetsClient = netClientFactory.NewSubnetsClient()
-	i.vgwClient = netClientFactory.NewVirtualNetworkGatewaysClient()
-	i.publicIPClient = netClientFactory.NewPublicIPAddressesClient()
+
+	i.vnetClient = clientFactory.NewVirtualNetworksClient()
+	i.subnetsClient = clientFactory.NewSubnetsClient()
+	i.vgwClient = clientFactory.NewVirtualNetworkGatewaysClient()
+	i.publicIPClient = clientFactory.NewPublicIPAddressesClient()
 	return nil
 }
 
@@ -198,14 +182,20 @@ func (i *Installer) IsCompleted(ctx context.Context) bool {
 		return false
 	}
 
+	// // Check if network configuration is applied (automatically discovered)
+	// if !i.isNetworkConfigured(ctx) {
+	// 	i.logger.Debug("VPN network configuration not applied")
+	// 	return false
+	// }
+
 	// // Check if VPN Gateway exists in Azure
 	// if gateway, err := i.getVPNGateway(ctx); err != nil || gateway == nil {
 	// 	i.logger.Debugf("VPN Gateway not found or not accessible: %v", err)
 	// 	return false
 	// }
 
-	i.logger.Debug("VPN Gateway setup appears to be completed")
-	return true
+	// i.logger.Debug("VPN Gateway setup appears to be completed")
+	return false
 }
 
 // provisionGateway handles VPN Gateway provisioning with idempotency
@@ -241,7 +231,7 @@ func (i *Installer) provisionGateway(ctx context.Context, vnetInfo vnetResourceI
 
 // createPublicIPForVPNGateway creates a public IP for the VPN Gateway
 func (i *Installer) createPublicIPForVPNGateway(ctx context.Context, vnetInfo vnetResourceInfo) (string, error) {
-	i.logger.Infof("Ensuring public IP exists: %s", PublicIPName)
+	i.logger.Infof("Ensuring public IP exists: %s", GatewayPublicIPName)
 
 	// Prepare Public IP parameters
 	allocationMethod := armnetwork.IPAllocationMethodStatic
@@ -263,7 +253,7 @@ func (i *Installer) createPublicIPForVPNGateway(ctx context.Context, vnetInfo vn
 	}
 
 	// Create Public IP - this is a long-running operation
-	poller, err := i.publicIPClient.BeginCreateOrUpdate(ctx, vnetInfo.resourceGroupName, PublicIPName, publicIPParams, nil)
+	poller, err := i.publicIPClient.BeginCreateOrUpdate(ctx, vnetInfo.resourceGroupName, GatewayPublicIPName, publicIPParams, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to start public IP creation: %w", err)
 	}
@@ -373,18 +363,30 @@ func (i *Installer) calculateGatewaySubnetCIDR(ctx context.Context, vnetInfo vne
 		return "", fmt.Errorf("VNet has no address prefixes")
 	}
 
-	// Use the first address prefix for calculation
-	vnetCIDR := vnetInfo.vnet.Properties.AddressSpace.AddressPrefixes[0]
-	i.logger.Infof("VNet address space: %s", *vnetCIDR)
+	// Try each address prefix until we find one with available space
+	var lastErr error
+	for idx, prefix := range vnetInfo.vnet.Properties.AddressSpace.AddressPrefixes {
+		if prefix == nil {
+			continue
+		}
 
-	// Calculate an available /27 subnet for GatewaySubnet
-	gatewaySubnetCIDR, err := i.calculateAvailableSubnetInRange(*vnetCIDR, vnetInfo.vnet.Properties.Subnets, GatewaySubnetPrefix)
-	if err != nil {
-		return "", fmt.Errorf("failed to calculate available subnet: %w", err)
+		vnetCIDR := *prefix
+		i.logger.Infof("Trying VNet address prefix %d: %s", idx+1, vnetCIDR)
+
+		// Calculate an available /27 subnet for GatewaySubnet in this address prefix
+		gatewaySubnetCIDR, err := i.calculateAvailableSubnetInRange(vnetCIDR, vnetInfo.vnet.Properties.Subnets, GatewaySubnetPrefix)
+		if err != nil {
+			i.logger.Warnf("No available space in address prefix %s: %v", vnetCIDR, err)
+			lastErr = err
+			continue
+		}
+
+		i.logger.Infof("Successfully calculated GatewaySubnet CIDR: %s in address prefix: %s", gatewaySubnetCIDR, vnetCIDR)
+		return gatewaySubnetCIDR, nil
 	}
 
-	i.logger.Infof("Calculated GatewaySubnet CIDR: %s", gatewaySubnetCIDR)
-	return gatewaySubnetCIDR, nil
+	// If we get here, no address prefix had available space
+	return "", fmt.Errorf("no available space for GatewaySubnet in any VNet address prefix. Last error: %w", lastErr)
 }
 
 // calculateAvailableSubnetInRange finds an available subnet within the VNet address space
@@ -495,109 +497,27 @@ func (i *Installer) getLastIP(network *net.IPNet) net.IP {
 }
 
 // AKS nodes can be in either BYO VNet or AKS managed VNet
-func (i *Installer) getAKSNodeVNet(ctx context.Context) (*armnetwork.VirtualNetwork, error) {
+func (i *Installer) getNodeVNet(ctx context.Context) (vnetResourceInfo, error) {
 	// First try to discover BYO VNet from agent pools
-	vnetID, err := i.discoverBYOVNet(ctx)
+	vnetID := i.config.GetVPNGatewayVNetID()
+	// Get VNet details
+	vnetResp, err := i.vnetClient.Get(ctx,
+		getResourceGroupFromResourceID(vnetID),
+		getResourceNameFromResourceID(vnetID), nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to discover BYO VNet: %w", err)
-	}
-	if vnetID != "" {
-		i.logger.Infof("Discovered BYO VNet for AKS cluster nodes: %s", vnetID)
-		subscriptionID := getSubscriptionIDFromResourceID(vnetID)
-		if err := i.setUpNetClients(ctx, subscriptionID); err != nil {
-			return nil, fmt.Errorf("failed to set up Azure Network clients: %w", err)
-		}
-		// Get VNet details
-		vnetResp, err := i.vnetClient.Get(ctx, getResourceGroupFromResourceID(vnetID), getResourceNameFromResourceID(vnetID), nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get VNet details for VNet ID %s: %w", vnetID, err)
-		}
-		return &vnetResp.VirtualNetwork, nil
+		return vnetResourceInfo{}, fmt.Errorf("failed to get VNet details for VNet ID %s: %w", vnetID, err)
 	}
 
-	i.logger.Info("No BYO VNet found for AKS cluster nodes")
-	if err := i.setUpNetClients(ctx, i.config.GetTargetClusterSubscriptionID()); err != nil {
-		return nil, fmt.Errorf("failed to set up Azure Network clients: %w", err)
+	vnet := &vnetResp.VirtualNetwork
+	vnetInfo := vnetResourceInfo{
+		vnetID:            to.String(vnet.ID),
+		location:          to.String(vnet.Location),
+		resourceGroupName: getResourceGroupFromResourceID(to.String(vnet.ID)),
+		subscriptionID:    getSubscriptionIDFromResourceID(to.String(vnet.ID)),
+		vnet:              vnet,
 	}
 
-	// Fallback to AKS managed VNet discovery
-	i.logger.Infof("Failed to discover BYO VNet: %s, Falling back to discover AKS managed VNet...", err)
-
-	vnet, err := i.discoverAKSManagedVNet(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to discover AKS managed VNet: %s", err)
-	}
-	if vnet == nil {
-		return nil, fmt.Errorf("no VNet found for AKS cluster nodes")
-	}
-
-	i.logger.Infof("Discovered AKS managed VNet for cluster nodes: %s", to.String(vnet.Name))
-	return vnet, nil
-}
-
-// discoverBYOVNet discovers the BYO VNet used by the AKS cluster node pools
-func (i *Installer) discoverBYOVNet(ctx context.Context) (string, error) {
-	// list agentpool in the target cluster, the property VnetSubnetID contains the VNet info
-	pager := i.apClient.NewListPager(
-		i.config.GetTargetClusterResourceGroup(),
-		i.config.GetTargetClusterName(),
-		nil,
-	)
-	// we only need to pick one agentpool to get the VNet info
-	// since an AKS cluster can only be bound to one VNet
-	for pager.More() {
-		page, err := pager.NextPage(ctx)
-		if err != nil {
-			return "", fmt.Errorf("failed to list agent pools: %w", err)
-		}
-		for _, ap := range page.Value {
-			if ap.Properties != nil && ap.Properties.VnetSubnetID != nil {
-				vnetID, err := getVNetIDFromSubnetID(*ap.Properties.VnetSubnetID)
-				if err != nil {
-					return "", fmt.Errorf("failed to get VNet ID from subnet ID: %w", err)
-				}
-				i.logger.Infof("Discovered BYO VNet ID from agent pool %s: %s", *ap.Name, vnetID)
-				return vnetID, nil
-			}
-		}
-	}
-
-	return "", nil // No BYO VNet found
-}
-
-// discoverAKSManagedVNet finds the AKS managed VNet in the target cluster's node resource group
-func (i *Installer) discoverAKSManagedVNet(ctx context.Context) (*armnetwork.VirtualNetwork, error) {
-	nodeResourceGroup := i.config.GetTargetClusterNodeResourceGroup()
-	if nodeResourceGroup == "" {
-		return nil, fmt.Errorf("node resource group is not set in target cluster configuration")
-	}
-
-	// List all VNets in the node resource group
-	// there should be only one VNet for AKS managed VNet
-	var aksVNet *armnetwork.VirtualNetwork
-	pager := i.vnetClient.NewListPager(nodeResourceGroup, nil)
-	for pager.More() {
-		page, err := pager.NextPage(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to list virtual networks in resource group %s: %w", nodeResourceGroup, err)
-		}
-
-		for _, vnet := range page.Value {
-			// Check for AKS-specific VNet naming pattern (aks-vnet-*)
-			if vnet.Name != nil && strings.HasPrefix(*vnet.Name, "aks-vnet-") {
-				i.logger.Infof("Found VNet with AKS naming pattern: %s in resource group %s", *vnet.Name, nodeResourceGroup)
-				aksVNet = vnet
-			}
-		}
-	}
-
-	// Return the best candidate VNet found
-	if aksVNet != nil {
-		i.logger.Infof("Found AKS managed VNet: %s", *aksVNet.Name)
-		return aksVNet, nil
-	}
-
-	return nil, fmt.Errorf("no VNet found in node resource group %s", nodeResourceGroup)
+	return vnetInfo, nil
 }
 
 // getVPNGateway finds a VPN Gateway by name using Azure SDK
@@ -633,8 +553,8 @@ func (i *Installer) createVPNGateway(ctx context.Context, vnetInfo vnetResourceI
 	gatewaySubnetID := fmt.Sprintf("%s/subnets/%s", vnetInfo.vnetID, GatewaySubnetName)
 
 	// Prepare VPN Gateway configuration
-	vpnGwSKU := armnetwork.VirtualNetworkGatewaySKUName("VpnGw2AZ")
-	vpnGwTier := armnetwork.VirtualNetworkGatewaySKUTier("VpnGw2AZ")
+	vpnGwSKU := armnetwork.VirtualNetworkGatewaySKUNameVPNGw2AZ
+	vpnGwTier := armnetwork.VirtualNetworkGatewaySKUTierVPNGw2AZ
 	gatewayType := armnetwork.VirtualNetworkGatewayTypeVPN
 	vpnType := armnetwork.VPNTypeRouteBased
 	enableBgp := false
@@ -737,16 +657,6 @@ func (i *Installer) ensureGatewaySubnet(ctx context.Context, vnetInfo vnetResour
 
 	i.logger.Infof("Successfully created GatewaySubnet: %s", *result.Name)
 	return nil
-}
-
-func getVNetIDFromSubnetID(subnetID string) (string, error) {
-	// Subnet ID format: /subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.Network/virtualNetworks/{vnetName}/subnets/{subnetName}
-	parts := strings.Split(subnetID, "/")
-	if len(parts) < 9 {
-		return "", fmt.Errorf("invalid subnet ID format: %s", subnetID)
-	}
-	vnetID := strings.Join(parts[:8], "/") // Up to virtualNetworks/{vnetName}
-	return vnetID, nil
 }
 
 func getResourceGroupFromResourceID(resourceID string) string {

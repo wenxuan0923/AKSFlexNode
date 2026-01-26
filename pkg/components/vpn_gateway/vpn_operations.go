@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -160,7 +161,7 @@ func (i *Installer) createRootCACertificate(privateKey *rsa.PrivateKey) ([]byte,
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal public key: %w", err)
 	}
-	subjectKeyId := sha1.Sum(publicKeyBytes)
+	subjectKeyID := sha1.Sum(publicKeyBytes)
 
 	template := x509.Certificate{
 		SerialNumber: big.NewInt(1),
@@ -172,7 +173,7 @@ func (i *Installer) createRootCACertificate(privateKey *rsa.PrivateKey) ([]byte,
 		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
 		BasicConstraintsValid: true,
 		IsCA:                  true,            // This is a CA certificate
-		SubjectKeyId:          subjectKeyId[:], // Required for chain validation
+		SubjectKeyId:          subjectKeyID[:], // Required for chain validation
 	}
 
 	// Self-signed root CA: template is both the certificate to create and the issuer
@@ -299,8 +300,12 @@ func (i *Installer) processVPNConfig(sourcePath, destPath string) error {
 		return fmt.Errorf("failed to create temporary config file: %w", err)
 	}
 	tempConfigPath := tempConfig.Name()
-	defer os.Remove(tempConfigPath)
-	tempConfig.Close()
+	_ = tempConfig.Close()
+	defer func() {
+		if err := utils.RunCleanupCommand(tempConfigPath); err != nil {
+			i.logger.Warnf("Failed to clean up temp config file %s: %v", tempConfigPath, err)
+		}
+	}()
 
 	// Copy source to temp file
 	if err := utils.RunSystemCommand("cp", sourcePath, tempConfigPath); err != nil {
@@ -430,50 +435,167 @@ func (i *Installer) setupOpenVPN(configPath string) error {
 	return nil
 }
 
-// getVPNInterface returns the VPN interface name (typically tun0)
-func (i *Installer) getVPNInterface() (string, error) {
-	// Check for tun interfaces
-	for j := 0; j < MaxVPNInterfaces; j++ {
-		iface := fmt.Sprintf("%s%d", VPNInterfacePrefix, j)
-		if _, err := os.Stat(fmt.Sprintf("/sys/class/net/%s", iface)); err == nil {
-			return iface, nil
+// configureVPNNetworking configures routes and iptables rules for VPN gateway connectivity
+func (i *Installer) configureVPNNetworking(ctx context.Context, vnetInfo vnetResourceInfo) error {
+	i.logger.Info("Configuring VPN network routes and iptables rules...")
+
+	// Get Pod CIDR from user configuration and extract all AKS VNet CIDRs from vnetInfo
+	podCIDR, aksVNetCIDRs, err := i.getNetworkConfiguration(vnetInfo)
+	if err != nil {
+		return fmt.Errorf("failed to get network configuration: %w", err)
+	}
+
+	i.logger.Infof("Using AKS VNet CIDRs: %v, Pod CIDR: %s", aksVNetCIDRs, podCIDR)
+
+	// Get VPN interface
+	vpnInterface, err := utils.GetVPNInterface()
+	if err != nil {
+		return fmt.Errorf("failed to get VPN interface: %w", err)
+	}
+
+	i.logger.Infof("Configuring networking for VPN interface: %s", vpnInterface)
+
+	// Add route for AKS VNet via VPN gateway
+	// The gateway IP is typically the first IP in the P2S CIDR range + 1
+	gatewayIP, err := i.calculateGatewayIP()
+	if err != nil {
+		return fmt.Errorf("failed to calculate gateway IP: %w", err)
+	}
+
+	// Add routes for all VNet CIDRs
+	for _, vnetCIDR := range aksVNetCIDRs {
+		i.logger.Infof("Adding route: %s via %s dev %s", vnetCIDR, gatewayIP, vpnInterface)
+		if err := i.addIPRoute(vnetCIDR, gatewayIP, vpnInterface); err != nil {
+			return fmt.Errorf("failed to add route for AKS VNet CIDR %s: %w", vnetCIDR, err)
 		}
 	}
-	return "", fmt.Errorf("no VPN interface found")
+
+	// Add iptables MASQUERADE rules for pod-to-AKS communication for all VNet CIDRs
+	for _, vnetCIDR := range aksVNetCIDRs {
+		i.logger.Infof("Adding iptables MASQUERADE rule: %s -> %s via %s", podCIDR, vnetCIDR, vpnInterface)
+		if err := i.addMasqueradeRule(podCIDR, vnetCIDR, vpnInterface); err != nil {
+			return fmt.Errorf("failed to add iptables MASQUERADE rule for %s: %w", vnetCIDR, err)
+		}
+	}
+
+	i.logger.Info("VPN network configuration completed successfully")
+	return nil
 }
 
-// getVPNIP returns the IP address of the VPN interface
-func (i *Installer) getVPNIP(iface string) (string, error) {
-	output, err := utils.RunCommandWithOutput("ip", "addr", "show", iface)
+// getNetworkConfiguration gets Pod CIDR from user config and extracts AKS VNet CIDRs from vnetInfo
+func (i *Installer) getNetworkConfiguration(vnetInfo vnetResourceInfo) (string, []string, error) {
+	// Get Pod CIDR from user configuration (required)
+	if i.config.Azure.VPNGateway == nil || i.config.Azure.VPNGateway.PodCIDR == "" {
+		return "", nil, fmt.Errorf("pod CIDR is required in VPN configuration when enabled, please set it")
+	}
+	podCIDR := i.config.Azure.VPNGateway.PodCIDR
+
+	// Extract all AKS VNet CIDRs from the already discovered VNet info
+	// Using all VNet CIDRs ensures we can reach all subnets including AKS nodes
+	aksVNetCIDRs, err := i.getVNetCIDRsFromInfo(vnetInfo)
 	if err != nil {
-		return "", fmt.Errorf("failed to get interface info: %w", err)
+		return "", nil, fmt.Errorf("failed to get AKS VNet CIDRs: %w", err)
 	}
 
-	// Parse IP address from output (simplified)
-	// In a real implementation, you'd want more robust parsing
-	lines := strings.Split(output, "\n")
-	for _, line := range lines {
-		if strings.Contains(line, "inet ") && !strings.Contains(line, "inet6") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				ip := strings.Split(fields[1], "/")[0]
-				return ip, nil
-			}
+	return podCIDR, aksVNetCIDRs, nil
+}
+
+// getVNetCIDRsFromInfo extracts all VNet CIDRs from vnetInfo
+func (i *Installer) getVNetCIDRsFromInfo(vnetInfo vnetResourceInfo) ([]string, error) {
+	// Extract all VNet CIDRs from the address space
+	if vnetInfo.vnet == nil ||
+		vnetInfo.vnet.Properties == nil ||
+		vnetInfo.vnet.Properties.AddressSpace == nil ||
+		len(vnetInfo.vnet.Properties.AddressSpace.AddressPrefixes) == 0 {
+		return nil, fmt.Errorf("VNet has no address prefixes")
+	}
+
+	// Extract all address prefixes as VNet CIDRs
+	var vnetCIDRs []string
+	for _, prefix := range vnetInfo.vnet.Properties.AddressSpace.AddressPrefixes {
+		if prefix != nil {
+			vnetCIDRs = append(vnetCIDRs, *prefix)
 		}
 	}
 
-	return "", fmt.Errorf("no IP address found for interface %s", iface)
+	if len(vnetCIDRs) == 0 {
+		return nil, fmt.Errorf("VNet has no valid address prefixes")
+	}
+
+	i.logger.Infof("Using VNet CIDRs: %v", vnetCIDRs)
+	return vnetCIDRs, nil
+}
+
+// calculateGatewayIP calculates the gateway IP from P2S CIDR
+func (i *Installer) calculateGatewayIP() (string, error) {
+	p2sCIDR := i.config.Azure.VPNGateway.P2SGatewayCIDR
+	if p2sCIDR == "" {
+		return "", fmt.Errorf("P2S Gateway CIDR not configured")
+	}
+
+	// Parse the P2S CIDR (e.g., "192.168.100.0/24")
+	_, network, err := net.ParseCIDR(p2sCIDR)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse P2S CIDR %s: %w", p2sCIDR, err)
+	}
+
+	// Gateway IP is typically the first usable IP in the range
+	// For 192.168.100.0/24, the gateway would be 192.168.100.1
+	ip := network.IP.To4()
+	if ip == nil {
+		return "", fmt.Errorf("only IPv4 networks are supported")
+	}
+
+	// Increment the network address by 1 to get the gateway IP
+	gatewayIP := net.IPv4(ip[0], ip[1], ip[2], ip[3]+1)
+	return gatewayIP.String(), nil
+}
+
+// addMasqueradeRule adds iptables MASQUERADE rule if it doesn't already exist
+func (i *Installer) addMasqueradeRule(srcCIDR, dstCIDR, outInterface string) error {
+	// Check if rule already exists
+	checkArgs := []string{"-t", "nat", "-C", "POSTROUTING", "-s", srcCIDR, "-d", dstCIDR, "-o", outInterface, "-j", "MASQUERADE"}
+	if err := utils.RunSystemCommand("iptables", checkArgs...); err == nil {
+		i.logger.Infof("iptables MASQUERADE rule already exists for %s -> %s via %s", srcCIDR, dstCIDR, outInterface)
+		return nil
+	}
+
+	// Add the rule
+	addArgs := []string{"-t", "nat", "-A", "POSTROUTING", "-s", srcCIDR, "-d", dstCIDR, "-o", outInterface, "-j", "MASQUERADE"}
+	if err := utils.RunSystemCommand("iptables", addArgs...); err != nil {
+		return fmt.Errorf("failed to add iptables rule: %w", err)
+	}
+
+	i.logger.Infof("Added iptables MASQUERADE rule: %s -> %s via %s", srcCIDR, dstCIDR, outInterface)
+	return nil
+}
+
+// addIPRoute adds an IP route if it doesn't already exist, similar to addMasqueradeRule
+func (i *Installer) addIPRoute(vnetCIDR, gatewayIP, vpnInterface string) error {
+	// Try to add the route, capture combined output to check for "File exists" error
+	output, err := utils.RunCommandWithOutput("ip", "route", "add", vnetCIDR, "via", gatewayIP, "dev", vpnInterface)
+	if err != nil {
+		// Check if route already exists by looking for "File exists" in the output or error
+		if strings.Contains(output, "File exists") || strings.Contains(err.Error(), "File exists") {
+			i.logger.Infof("Route to %s already exists, skipping", vnetCIDR)
+			return nil
+		}
+		return fmt.Errorf("failed to add route for AKS VNet CIDR %s: %s (exit code: %v)", vnetCIDR, strings.TrimSpace(output), err)
+	}
+
+	i.logger.Infof("Added route: %s via %s dev %s", vnetCIDR, gatewayIP, vpnInterface)
+	return nil
 }
 
 // isVPNConnected checks if VPN connection is active
 func (i *Installer) isVPNConnected() bool {
-	iface, err := i.getVPNInterface()
+	iface, err := utils.GetVPNInterface()
 	if err != nil {
 		return false
 	}
 
-	_, err = i.getVPNIP(iface)
-	return err == nil
+	ip, err := utils.GetVPNInterfaceIP(iface)
+	return err == nil && ip != ""
 }
 
 // uploadCertificateToAzure uploads the root certificate to Azure VPN Gateway using Azure SDK
@@ -486,16 +608,31 @@ func (i *Installer) uploadCertificateToAzure(ctx context.Context, certData strin
 
 	// Check if VPN client configuration exists
 	// Look for our specific certificate by name and data
-	for _, cert := range gateway.Properties.VPNClientConfiguration.VPNClientRootCertificates {
-		if cert.Name != nil && *cert.Name == VPNClientRootCertName {
+	var existingCertFound bool
+	var existingCertMatches bool
+
+	// Check if VPN client configuration exists and has certificates
+	if gateway.Properties.VPNClientConfiguration != nil &&
+		gateway.Properties.VPNClientConfiguration.VPNClientRootCertificates != nil {
+		for _, cert := range gateway.Properties.VPNClientConfiguration.VPNClientRootCertificates {
 			if cert.Properties != nil && cert.Properties.PublicCertData != nil {
-				// Compare certificate data to ensure it's the same certificate
+				// Compare certificate data directly
 				if *cert.Properties.PublicCertData == certData {
-					i.logger.Info("VPN certificate already exists on Azure VPN Gateway, skipping upload")
+					i.logger.Infof("VPN certificate already exists on Azure VPN Gateway with name '%s', skipping upload", *cert.Name)
 					return nil // Certificate already exists and matches, no need to upload
 				}
 			}
+			// Track if any certificate exists (regardless of name)
+			if cert.Name != nil {
+				existingCertFound = true
+			}
 		}
+	}
+
+	if existingCertFound && !existingCertMatches {
+		i.logger.Info("Adding new VPN root certificate alongside existing certificates")
+	} else if !existingCertFound {
+		i.logger.Info("No existing VPN root certificates found, uploading first certificate")
 	}
 
 	// Ensure the VPN client configuration section exists with required address pool
@@ -511,8 +648,12 @@ func (i *Installer) uploadCertificateToAzure(ctx context.Context, certData strin
 		}
 	}
 
-	// Create root certificate parameters
-	certName := VPNClientRootCertName
+	// Create root certificate parameters with unique name based on certificate data
+	certHash := fmt.Sprintf("%x", sha1.Sum([]byte(certData)))[:8] // Use first 8 chars of hash
+	certName := fmt.Sprintf("%s-%s", VPNClientRootCertName, certHash)
+
+	i.logger.Infof("Adding VPN root certificate with name: %s", certName)
+
 	rootCert := armnetwork.VPNClientRootCertificate{
 		Name: &certName,
 		Properties: &armnetwork.VPNClientRootCertificatePropertiesFormat{
@@ -520,8 +661,14 @@ func (i *Installer) uploadCertificateToAzure(ctx context.Context, certData strin
 		},
 	}
 
-	// Update the root certificate in the VPN client configuration
-	gateway.Properties.VPNClientConfiguration.VPNClientRootCertificates = []*armnetwork.VPNClientRootCertificate{&rootCert}
+	// Append the new certificate to existing certificates instead of replacing them
+	if gateway.Properties.VPNClientConfiguration.VPNClientRootCertificates == nil {
+		gateway.Properties.VPNClientConfiguration.VPNClientRootCertificates = []*armnetwork.VPNClientRootCertificate{}
+	}
+
+	// Always append the new certificate (with unique name, no conflicts)
+	gateway.Properties.VPNClientConfiguration.VPNClientRootCertificates =
+		append(gateway.Properties.VPNClientConfiguration.VPNClientRootCertificates, &rootCert)
 
 	// Update the VPN Gateway with the new certificate configuration
 	poller, err := i.vgwClient.BeginCreateOrUpdate(ctx, vnetInfo.resourceGroupName, DefaultVPNGatewayName, gateway.VirtualNetworkGateway, nil)
@@ -535,7 +682,11 @@ func (i *Installer) uploadCertificateToAzure(ctx context.Context, certData strin
 		return fmt.Errorf("failed to update VPN Gateway with certificate: %w", err)
 	}
 
-	i.logger.Info("VPN certificate uploaded to Azure successfully")
+	if existingCertFound && !existingCertMatches {
+		i.logger.Info("VPN certificate added successfully - now have multiple certificates available")
+	} else {
+		i.logger.Info("VPN certificate uploaded to Azure successfully")
+	}
 	return nil
 
 }
@@ -610,8 +761,12 @@ func (i *Installer) downloadConfigFromURL(url string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to create temporary ZIP file: %w", err)
 	}
-	defer os.Remove(tempZipFile.Name())
-	defer tempZipFile.Close()
+	defer func() {
+		if err := utils.RunCleanupCommand(tempZipFile.Name()); err != nil {
+			i.logger.Warnf("Failed to clean up temp ZIP file %s: %v", tempZipFile.Name(), err)
+		}
+	}()
+	defer func() { _ = tempZipFile.Close() }()
 
 	// Download the ZIP file using HTTP client
 	i.logger.Info("Downloading VPN configuration ZIP file...")
@@ -619,7 +774,7 @@ func (i *Installer) downloadConfigFromURL(url string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to download VPN config ZIP: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("failed to download VPN config ZIP: HTTP %d", resp.StatusCode)
@@ -630,14 +785,18 @@ func (i *Installer) downloadConfigFromURL(url string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to save VPN config ZIP: %w", err)
 	}
-	tempZipFile.Close()
+	_ = tempZipFile.Close()
 
 	// Create temporary directory for extraction
 	tempDir, err := os.MkdirTemp("", TempVPNExtractPrefix+"*")
 	if err != nil {
 		return "", fmt.Errorf("failed to create temporary directory: %w", err)
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() {
+		if err := utils.RunCleanupCommand(tempDir); err != nil {
+			i.logger.Warnf("Failed to clean up temp directory %s: %v", tempDir, err)
+		}
+	}()
 
 	// Extract the ZIP file using Go's archive/zip
 	i.logger.Info("Extracting VPN configuration ZIP file...")
@@ -645,7 +804,7 @@ func (i *Installer) downloadConfigFromURL(url string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to open VPN config ZIP: %w", err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	// Extract all files
 	for _, file := range reader.File {
@@ -658,7 +817,7 @@ func (i *Installer) downloadConfigFromURL(url string) (string, error) {
 
 		// Create directory if needed
 		if file.FileInfo().IsDir() {
-			os.MkdirAll(path, file.FileInfo().Mode())
+			_ = os.MkdirAll(path, file.FileInfo().Mode())
 			continue
 		}
 
@@ -675,13 +834,13 @@ func (i *Installer) downloadConfigFromURL(url string) (string, error) {
 
 		targetFile, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, file.FileInfo().Mode())
 		if err != nil {
-			fileReader.Close()
+			_ = fileReader.Close()
 			return "", fmt.Errorf("failed to create file %s: %w", path, err)
 		}
 
 		_, err = io.Copy(targetFile, fileReader)
-		fileReader.Close()
-		targetFile.Close()
+		_ = fileReader.Close()
+		_ = targetFile.Close()
 
 		if err != nil {
 			return "", fmt.Errorf("failed to extract file %s: %w", file.Name, err)
@@ -736,7 +895,7 @@ func (i *Installer) downloadConfigFromURL(url string) (string, error) {
 		if ovpnPath == "" {
 			// List the contents of the extracted directory for debugging
 			i.logger.Error("OpenVPN config file not found. Listing extracted contents:")
-			filepath.Walk(tempDir, func(path string, info os.FileInfo, err error) error {
+			_ = filepath.Walk(tempDir, func(path string, info os.FileInfo, err error) error {
 				if err == nil {
 					relPath, _ := filepath.Rel(tempDir, path)
 					i.logger.Errorf("  %s", relPath)

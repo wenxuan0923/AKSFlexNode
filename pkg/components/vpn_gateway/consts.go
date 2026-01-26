@@ -36,7 +36,6 @@ const (
 	ConfigDirPerm       = 0755
 	PrivateKeyFilePerm  = 0600
 	CertificateFilePerm = 0644
-	VPNConfigFilePerm   = 0600
 
 	// Certificate configuration
 	CertificateKeySize    = 2048
@@ -50,20 +49,13 @@ const (
 	// Timeouts and intervals
 	GatewayProvisioningTimeout = 30 * time.Minute // VPN Gateway provisioning timeout
 	GatewayStatusCheckInterval = 30 * time.Second // Polling interval for gateway status
-	VPNConnectionTimeout       = 30 * time.Second // VPN connection establishment timeout
+	VPNConnectionTimeout       = 1 * time.Minute  // VPN connection establishment timeout
 	VPNConnectionCheckInterval = 2 * time.Second  // Interval for VPN connection checks
 
 	// System paths for validation
 	SystemEtcPrefix = "/etc/"
 	SystemUsrPrefix = "/usr/"
 	SystemVarPrefix = "/var/"
-
-	// Network interface patterns
-	VPNInterfacePrefix = "tun"
-	MaxVPNInterfaces   = 10
-
-	// Azure CLI authentication method
-	AzureAuthMethod = "EAPTLS"
 
 	// Temporary file patterns
 	TempVPNConfigPattern = "vpnconfig-*.ovpn"
@@ -75,16 +67,13 @@ const (
 	OpenVPNConfigPath    = "OpenVPN/vpnconfig.ovpn"
 	GenericVPNConfigPath = "Generic/VpnSettings.xml"
 
-	// Azure error messages
-	AzureNotFoundError = "NotFound"
-
 	// OpenVPN service template
 	OpenVPNServiceTemplate = "openvpn@vpnconfig"
 	OpenVPNServiceName     = "vpnconfig"
 
 	// Public IP naming pattern
-	PublicIPName   = "vpn-gateway-ip"
-	VPNGatewayName = "vpn-gateway"
+	GatewayPublicIPName = "vpn-gateway-ip"
+	VPNGatewayName      = "vpn-gateway"
 
 	// Point-to-Site configuration name
 	P2SConfigName = "P2SConfig"

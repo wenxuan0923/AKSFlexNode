@@ -59,6 +59,8 @@ type VPNConfig struct {
 	Enabled        bool   `json:"enabled"`
 	P2SGatewayCIDR string `json:"p2sGatewayCIDR"`
 	GatewaySKU     string `json:"gatewaySKU"`
+	PodCIDR        string `json:"podCIDR,omitempty"` // Pod network CIDR (e.g., "10.244.0.0/16") - required for routing
+	VNetID         string `json:"vnetID,omitempty"`  //  Azure VNet resource ID (AKS managed or BYO VNet where AKS nodes reside)
 }
 
 // AgentConfig holds agent-specific operational configuration.
@@ -115,9 +117,10 @@ type KubernetesPathsConfig struct {
 	KubeletDir      string `json:"kubeletDir"`
 }
 
-// CNIPathsConfig holds file system paths related to CNI plugins and configurations.
+// CNIConfig holds configuration settings for CNI plugins and networking
 type CNIConfig struct {
 	Version string `json:"version"`
+	Mode    string `json:"mode,omitempty"` // "bridge", "none" (default: "bridge")
 }
 
 // NPDConfig holds configuration settings for the Node Problem Detector (NPD).
@@ -240,4 +243,20 @@ func (cfg *Config) IsVPNGatewayEnabled() bool {
 		return true
 	}
 	return false
+}
+
+// GetCNIMode returns the CNI mode (bridge, none)
+func (cfg *Config) GetCNIMode() string {
+	if cfg.CNI.Mode != "" {
+		return cfg.CNI.Mode
+	}
+	return "bridge" // default to bridge
+}
+
+// GetVPNGatewayVNetID returns the VNet ID for the VPN Gateway from configuration
+func (cfg *Config) GetVPNGatewayVNetID() string {
+	if cfg.Azure.VPNGateway != nil {
+		return cfg.Azure.VPNGateway.VNetID
+	}
+	return ""
 }

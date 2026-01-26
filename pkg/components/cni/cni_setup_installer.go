@@ -54,13 +54,13 @@ func (i *Installer) Execute(ctx context.Context) error {
 	i.logger.Info("Step 2: Installing CNI plugins")
 	if err := i.installCNIPlugins(); err != nil {
 		i.logger.Errorf("CNI plugins installation failed: %v", err)
-		return fmt.Errorf("failed to install CNI plugins version %s: %w", DefaultCNIVersion, err)
+		return fmt.Errorf("failed to install CNI plugins version %s: %w", defaultCNIVersion, err)
 	}
 	i.logger.Info("CNI plugins installed successfully")
 
-	// Create bridge configuration for edge node
-	i.logger.Info("Step 3: Creating bridge configuration")
-	if err := i.createBridgeConfig(); err != nil {
+	// Create cni configuration for edge node
+	i.logger.Info("Step 3: Creating CNI configuration")
+	if err := i.createCNIConfig(); err != nil {
 		i.logger.Errorf("Bridge configuration creation failed: %v", err)
 		return fmt.Errorf("failed to create bridge config: %w", err)
 	}
@@ -89,11 +89,18 @@ func (i *Installer) IsCompleted(ctx context.Context) bool {
 		}
 	}
 
-	// Validate Step 3: Bridge configuration
-	configPath := filepath.Join(DefaultCNIConfDir, bridgeConfigFile)
-	if !utils.FileExistsAndValid(configPath) {
-		i.logger.Debug("Bridge configuration file not found")
-		return false
+	// Validate Step 3: Network configuration based on CNI mode
+	mode := i.config.GetCNIMode()
+
+	if mode == "none" {
+		i.logger.Debug("CNI mode set to 'none', skipping network config validation")
+	} else {
+		// For bridge mode (or any other mode defaulting to bridge)
+		configPath := filepath.Join(DefaultCNIConfDir, bridgeConfigFile)
+		if !utils.FileExistsAndValid(configPath) {
+			i.logger.Debug("Bridge configuration file not found")
+			return false
+		}
 	}
 
 	i.logger.Debug("CNI setup validation passed - all components properly configured")
@@ -117,9 +124,13 @@ func (i *Installer) prepareCNIDirectories() error {
 			}
 		}
 
-		// Set proper permissions
-		if err := utils.RunSystemCommand("chmod", "-R", "0755", dir); err != nil {
-			logrus.Warnf("Failed to set permissions for CNI directory %s: %v", dir, err)
+		// Fix permissions for Ubuntu 24.04 AppArmor compatibility
+		if err := utils.RunSystemCommand("chmod", "755", dir); err != nil {
+			return fmt.Errorf("failed to set permissions for CNI directory %s: %w", dir, err)
+		}
+
+		if err := utils.RunSystemCommand("chown", "-R", "root:root", dir); err != nil {
+			logrus.Warnf("Failed to set ownership for CNI directory %s: %v", dir, err)
 		}
 	}
 	return nil
@@ -202,12 +213,29 @@ func getCNIVersion(cfg *config.Config) string {
 	if cfg.CNI.Version != "" {
 		return cfg.CNI.Version
 	}
-	return DefaultCNIVersion
+	return defaultCNIVersion
 }
 
-// CreateBridgeConfig creates bridge CNI configuration for edge nodes (compatible with BYO Cilium)
-func (i *Installer) createBridgeConfig() error {
+// createCNIConfig creates network CNI configuration for edge nodes
+func (i *Installer) createCNIConfig() error {
+	mode := i.config.GetCNIMode()
+
+	if mode == "none" {
+		i.logger.Info("CNI mode set to 'none', skipping network configuration")
+		return nil
+	}
+
+	// For all other modes (including unknown), use bridge as default
+	if mode != "bridge" {
+		i.logger.Warnf("Unknown CNI mode '%s', defaulting to bridge", mode)
+	}
+
 	logrus.Info("Creating bridge CNI configuration for edge node...")
+	return i.createBridgeConfig()
+}
+
+// createBridgeConfig creates the traditional bridge CNI configuration
+func (i *Installer) createBridgeConfig() error {
 	configPath := filepath.Join(DefaultCNIConfDir, bridgeConfigFile)
 
 	// Load br_netfilter kernel module which is required for bridge networking
@@ -246,7 +274,7 @@ func (i *Installer) createBridgeConfig() error {
             }
         ]
     }
-}`, DefaultCNISpecVersion)
+}`, defaultCNISpecVersion)
 
 	// Write the config file into a temp file for Atomic file write
 	tempBridgeFile, err := utils.CreateTempFile("bridge-cni-*.conf", []byte(bridgeConfig))

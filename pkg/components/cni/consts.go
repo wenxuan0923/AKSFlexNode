@@ -18,10 +18,10 @@ const (
 	tuningPlugin    = "tuning"
 
 	// CNI version
-	DefaultCNIVersion = "1.5.1"
+	defaultCNIVersion = "1.5.1"
 
 	// CNI specification version for configuration files
-	DefaultCNISpecVersion = "0.3.1"
+	defaultCNISpecVersion = "0.3.1"
 )
 
 var cniDirs = []string{

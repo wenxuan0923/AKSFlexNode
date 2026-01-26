@@ -24,7 +24,20 @@ func (t *timestampedFileWriter) Write(p []byte) (n int, err error) {
 	// Add timestamp prefix to the log entry for file output
 	timestamp := fmt.Sprintf("[%s] ", time.Now().Format("2006-01-02 15:04:05.000"))
 	timestampedEntry := append([]byte(timestamp), p...)
-	return t.writer.Write(timestampedEntry)
+
+	// Write the timestamped entry to the underlying writer
+	written, err := t.writer.Write(timestampedEntry)
+	if err != nil {
+		return 0, err
+	}
+
+	// Ensure we wrote all the timestamped data
+	if written < len(timestampedEntry) {
+		return 0, fmt.Errorf("short write: wrote %d bytes, expected %d", written, len(timestampedEntry))
+	}
+
+	// Return the original input length to satisfy io.MultiWriter expectations
+	return len(p), nil
 }
 
 // Context key for storing logger
@@ -98,8 +111,9 @@ func SetupLogger(ctx context.Context, level, logDir string) context.Context {
 	// Configure log formatter for systemd compatibility
 	logger.SetReportCaller(true)
 
-	// Detect if running under systemd (check for journal environment)
-	isSystemdService := os.Getenv("JOURNAL_STREAM") != "" || isRunningUnderSystemd()
+	// Detect if running as a systemd service (not just under systemd)
+	// Only use systemd formatting when actually running as a service
+	isSystemdService := os.Getenv("JOURNAL_STREAM") != ""
 
 	if isSystemdService {
 		// For systemd services, use a simpler formatter optimized for journald

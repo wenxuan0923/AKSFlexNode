@@ -16,24 +16,21 @@ import (
 
 // UnInstaller handles VPN Gateway cleanup operations
 type UnInstaller struct {
-	config       *config.Config
-	logger       *logrus.Logger
-	authProvider *auth.AuthProvider
+	config         *config.Config
+	logger         *logrus.Logger
+	vnetClient     *armnetwork.VirtualNetworksClient
+	subnetsClient  *armnetwork.SubnetsClient
+	vgwClient      *armnetwork.VirtualNetworkGatewaysClient
+	publicIPClient *armnetwork.PublicIPAddressesClient
 }
 
 // NewUnInstaller creates a new VPN Gateway uninstaller
 func NewUnInstaller(logger *logrus.Logger) *UnInstaller {
 	cfg := config.GetConfig()
 	return &UnInstaller{
-		config:       cfg,
-		logger:       logger,
-		authProvider: auth.NewAuthProvider(),
+		config: cfg,
+		logger: logger,
 	}
-}
-
-// GetAuthProvider returns the auth provider (implements AuthProvider interface)
-func (u *UnInstaller) GetAuthProvider() *auth.AuthProvider {
-	return u.authProvider
 }
 
 // GetName returns the cleanup step name
@@ -46,6 +43,12 @@ func (u *UnInstaller) GetName() string {
 func (u *UnInstaller) Execute(ctx context.Context) error {
 	u.logger.Info("Starting VPN Gateway cleanup for unbootstrap process")
 
+	// Set up Azure clients
+	if err := u.setUpClients(ctx); err != nil {
+		u.logger.Errorf("Failed to set up Azure clients: %v", err)
+		return fmt.Errorf("vpn gateway setup failed at client setup: %w", err)
+	}
+
 	// Step 1: Disconnect VPN connection
 	u.logger.Info("Step 1: Disconnecting VPN connection")
 	if err := u.disconnectVPN(); err != nil {
@@ -54,20 +57,20 @@ func (u *UnInstaller) Execute(ctx context.Context) error {
 		u.logger.Info("Successfully disconnected VPN connection")
 	}
 
-	// Step 2: Clean up VPN configuration files
-	u.logger.Info("Step 2: Cleaning up VPN configuration files")
+	// Step 2: Clean up VPN networking (routes and iptables rules)
+	u.logger.Info("Step 2: Cleaning up VPN networking configuration")
+	if err := u.cleanupVPNNetworking(); err != nil {
+		u.logger.Warnf("Failed to cleanup VPN networking (continuing cleanup): %v", err)
+	} else {
+		u.logger.Info("Successfully cleaned up VPN networking configuration")
+	}
+
+	// Step 3: Clean up VPN configuration files and certificates
+	u.logger.Info("Step 3: Cleaning up VPN configuration files and certificates")
 	if err := u.cleanupVPNFiles(); err != nil {
 		u.logger.Warnf("Failed to cleanup VPN files (continuing cleanup): %v", err)
 	} else {
-		u.logger.Info("Successfully cleaned up VPN configuration files")
-	}
-
-	// Step 3: Optionally clean up certificates (keep certificates as they might be reused)
-	u.logger.Info("Step 3: Cleaning up VPN certificates")
-	if err := u.cleanupCertificates(); err != nil {
-		u.logger.Warnf("Failed to cleanup certificates (continuing cleanup): %v", err)
-	} else {
-		u.logger.Info("Successfully cleaned up VPN certificates")
+		u.logger.Info("Successfully cleaned up VPN configuration files and certificates")
 	}
 
 	// Note: We don't delete the VPN Gateway from Azure as it's expensive to recreate
@@ -84,29 +87,37 @@ func (u *UnInstaller) Execute(ctx context.Context) error {
 	return nil
 }
 
+// setUpAKSClients sets up Azure Container Service clients using the target cluster subscription ID
+func (u *UnInstaller) setUpClients(ctx context.Context) error {
+	cred, err := auth.NewAuthProvider().UserCredential(config.GetConfig())
+	if err != nil {
+		return fmt.Errorf("failed to get authentication credential: %w", err)
+	}
+
+	vnetID := u.config.GetVPNGatewayVNetID()
+	if vnetID == "" {
+		return fmt.Errorf("failed to get VNet ID from configuration")
+	}
+	vnetSub := getSubscriptionIDFromResourceID(vnetID)
+
+	clientFactory, err := armnetwork.NewClientFactory(vnetSub, cred, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create Azure Network client factory: %w", err)
+	}
+
+	u.vnetClient = clientFactory.NewVirtualNetworksClient()
+	u.subnetsClient = clientFactory.NewSubnetsClient()
+	u.vgwClient = clientFactory.NewVirtualNetworkGatewaysClient()
+	u.publicIPClient = clientFactory.NewPublicIPAddressesClient()
+	return nil
+}
+
 // IsCompleted checks if VPN Gateway cleanup has been completed
 func (u *UnInstaller) IsCompleted(ctx context.Context) bool {
 	if !u.config.IsVPNGatewayEnabled() {
 		u.logger.Info("VPN Gateway is not enabled in configuration; skipping cleanup")
 		return true
 	}
-
-	u.logger.Debug("Checking VPN Gateway cleanup completion status")
-
-	// Check if VPN is still connected
-	if u.isVPNConnected() {
-		u.logger.Debug("VPN is still connected")
-		return false
-	}
-
-	// Check if VPN configuration files still exist
-	configPath := GetVPNConfigPath()
-	if _, err := os.Stat(configPath); err == nil {
-		u.logger.Debug("VPN configuration files still exist")
-		return false
-	}
-
-	u.logger.Debug("VPN Gateway cleanup appears to be completed")
 	return true
 }
 
@@ -130,14 +141,15 @@ func (u *UnInstaller) disconnectVPN() error {
 	return nil
 }
 
-// cleanupVPNFiles removes VPN configuration files and directories
+// cleanupVPNFiles removes VPN configuration files and certificates
 func (u *UnInstaller) cleanupVPNFiles() error {
-	u.logger.Info("Cleaning up VPN configuration files")
+	u.logger.Info("Cleaning up VPN configuration files and certificates")
 
 	filesToCleanup := []string{
 		GetVPNConfigPath(),
 		GetVPNClientCertPath(),
 		GetVPNClientKeyPath(),
+		GetVPNRootCertPath(), // Also include root certificate
 	}
 
 	for _, filePath := range filesToCleanup {
@@ -161,78 +173,188 @@ func (u *UnInstaller) cleanupVPNFiles() error {
 		u.logger.Infof("Removed directory: %s", CertificatesDir)
 	}
 
-	u.logger.Info("VPN files cleanup completed")
+	u.logger.Info("VPN files and certificates cleanup completed")
 	return nil
 }
 
-// cleanupCertificates removes certificate files
-func (u *UnInstaller) cleanupCertificates() error {
-	u.logger.Info("Cleaning up VPN certificates")
+// cleanupVPNNetworking removes IP routes and iptables rules configured for VPN
+func (u *UnInstaller) cleanupVPNNetworking() error {
+	u.logger.Info("Cleaning up VPN networking configuration (routes and iptables rules)")
 
-	certificateFiles := []string{
-		GetVPNClientCertPath(),
-		GetVPNClientKeyPath(),
-	}
+	// Get VPN interface to clean up routes
+	vpnInterface, err := utils.GetVPNInterface()
+	if err != nil {
+		u.logger.Infof("No VPN interface found, skipping route cleanup: %v", err)
+		// Continue with iptables cleanup even if no VPN interface
+	} else {
+		u.logger.Infof("Found VPN interface: %s, cleaning up routes", vpnInterface)
 
-	for _, certFile := range certificateFiles {
-		if err := os.Remove(certFile); err != nil {
-			if !os.IsNotExist(err) {
-				u.logger.Warnf("Failed to remove certificate file %s: %v", certFile, err)
-			} else {
-				u.logger.Debugf("Certificate file %s already removed or doesn't exist", certFile)
-			}
-		} else {
-			u.logger.Infof("Removed certificate file: %s", certFile)
+		// Get all routes via the VPN interface and remove them
+		if err := u.cleanupVPNRoutes(vpnInterface); err != nil {
+			u.logger.Warnf("Failed to clean up VPN routes: %v", err)
 		}
 	}
 
-	u.logger.Info("Certificate cleanup completed")
+	// Clean up iptables MASQUERADE rules
+	if err := u.cleanupIPTablesRules(); err != nil {
+		u.logger.Warnf("Failed to clean up iptables rules: %v", err)
+	}
+
+	u.logger.Info("VPN networking cleanup completed")
 	return nil
 }
 
-// isVPNConnected checks if VPN connection is active
-func (u *UnInstaller) isVPNConnected() bool {
-	// Check if there's an active VPN interface
+// cleanupVPNRoutes removes all routes that go through the VPN interface
+func (u *UnInstaller) cleanupVPNRoutes(vpnInterface string) error {
+	u.logger.Infof("Cleaning up routes via interface: %s", vpnInterface)
+
+	// Get current routing table
 	output, err := utils.RunCommandWithOutput("ip", "route", "show")
 	if err != nil {
-		u.logger.Debugf("Failed to check VPN connection status: %v", err)
-		return false
+		return fmt.Errorf("failed to get current routes: %w", err)
 	}
 
-	// Look for VPN-related routes (tun interfaces or routes through VPN gateway)
-	vpnRoutePatterns := []string{"tun", "tap"}
-	outputStr := string(output)
+	// Parse routes and find ones using our VPN interface
+	routes := strings.Split(output, "\n")
+	routesRemoved := 0
 
-	for _, pattern := range vpnRoutePatterns {
-		if strings.Contains(outputStr, pattern) {
-			u.logger.Debugf("Found VPN-related route with pattern: %s", pattern)
-			return true
+	for _, route := range routes {
+		route = strings.TrimSpace(route)
+		if route == "" {
+			continue
+		}
+
+		// Check if this route uses our VPN interface
+		if strings.Contains(route, "dev "+vpnInterface) {
+			// Extract the destination from the route (first part before whitespace)
+			parts := strings.Fields(route)
+			if len(parts) > 0 {
+				dest := parts[0]
+				u.logger.Infof("Removing route: %s", dest)
+
+				// Remove the route
+				if err := utils.RunSystemCommand("ip", "route", "del", dest); err != nil {
+					u.logger.Warnf("Failed to remove route %s: %v", dest, err)
+					// Continue with other routes
+				} else {
+					routesRemoved++
+					u.logger.Infof("Removed route: %s", dest)
+				}
+			}
 		}
 	}
 
-	return false
+	u.logger.Infof("Removed %d VPN routes", routesRemoved)
+	return nil
 }
 
-// Optional: cleanupAzureResources removes VPN Gateway resources from Azure
-// This is commented out because VPN Gateway deletion is expensive and might not be desired
-// Uncomment and call this method if you want to also delete Azure resources
+// cleanupIPTablesRules removes iptables MASQUERADE rules added for VPN
+func (u *UnInstaller) cleanupIPTablesRules() error {
+	u.logger.Info("Cleaning up iptables MASQUERADE rules")
+
+	// Get current NAT table rules
+	output, err := utils.RunCommandWithOutput("iptables", "-t", "nat", "-L", "POSTROUTING", "-n", "--line-numbers")
+	if err != nil {
+		return fmt.Errorf("failed to list iptables rules: %w", err)
+	}
+
+	// Parse output to find MASQUERADE rules
+	lines := strings.Split(output, "\n")
+	rulesRemoved := 0
+
+	// Process lines in reverse order to maintain line numbers when deleting
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" || strings.HasPrefix(line, "Chain") || strings.HasPrefix(line, "num") {
+			continue
+		}
+
+		// Look for MASQUERADE rules (likely involving our VPN interface or VNet CIDRs)
+		if strings.Contains(line, "MASQUERADE") {
+			// Extract the line number (first field)
+			parts := strings.Fields(line)
+			if len(parts) > 0 {
+				lineNum := parts[0]
+
+				// Check if this rule involves VPN (look for tun interface references)
+				if strings.Contains(line, "tun") {
+					u.logger.Infof("Removing iptables MASQUERADE rule: %s", line)
+
+					// Remove the rule by line number
+					if err := utils.RunSystemCommand("iptables", "-t", "nat", "-D", "POSTROUTING", lineNum); err != nil {
+						u.logger.Warnf("Failed to remove iptables rule %s: %v", lineNum, err)
+						// Continue with other rules
+					} else {
+						rulesRemoved++
+						u.logger.Infof("Removed iptables rule: %s", line)
+					}
+				}
+			}
+		}
+	}
+
+	u.logger.Infof("Removed %d iptables MASQUERADE rules", rulesRemoved)
+	return nil
+}
+
+// cleanupAzureResources removes VPN Gateway resources from Azure
+// This includes: VPN Gateway, Public IP, and GatewaySubnet
 func (u *UnInstaller) cleanupAzureResources(ctx context.Context) error {
 	u.logger.Info("Cleaning up VPN Gateway resources from Azure")
 
-	// Delete VPN Gateway (this is a long-running operation)
-	resourceGroup := u.config.GetTargetClusterNodeResourceGroup()
+	vnetID := u.config.GetVPNGatewayVNetID()
+	resourceGroupName := getResourceGroupFromResourceID(vnetID)
+	vnetName := getResourceNameFromResourceID(vnetID)
 
-	cred, err := auth.NewAuthProvider().UserCredential(config.GetConfig())
-	if err != nil {
-		return fmt.Errorf("failed to get authentication credential: %w", err)
-	}
-	client, err := armnetwork.NewVirtualNetworkGatewaysClient(u.config.Azure.SubscriptionID, cred, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create VPN Gateway client: %w", err)
-	}
-
+	// Step 1: Delete VPN Gateway (this must be done first as it depends on other resources)
 	u.logger.Infof("Deleting VPN Gateway: %s (this may take 10-20 minutes)", DefaultVPNGatewayName)
-	poller, err := client.BeginDelete(ctx, resourceGroup, DefaultVPNGatewayName, nil)
+	if err := u.deleteVPNGateway(ctx, resourceGroupName); err != nil {
+		u.logger.Warnf("Failed to delete VPN Gateway: %v", err)
+		// Continue with other cleanup even if VPN Gateway deletion fails
+	} else {
+		u.logger.Info("VPN Gateway successfully deleted from Azure")
+	}
+
+	// Step 2: Delete Public IP
+	u.logger.Infof("Deleting Public IP: %s", GatewayPublicIPName)
+	if err := u.deletePublicIP(ctx, resourceGroupName); err != nil {
+		u.logger.Warnf("Failed to delete Public IP: %v", err)
+		// Continue with other cleanup
+	} else {
+		u.logger.Info("Public IP successfully deleted from Azure")
+	}
+
+	// Step 3: Delete GatewaySubnet (this should be done last)
+	u.logger.Infof("Deleting GatewaySubnet: %s", GatewaySubnetName)
+	if err := u.deleteGatewaySubnet(ctx, resourceGroupName, vnetName); err != nil {
+		u.logger.Warnf("Failed to delete GatewaySubnet: %v", err)
+		// Continue - this is not critical
+	} else {
+		u.logger.Info("GatewaySubnet successfully deleted from Azure")
+	}
+
+	u.logger.Info("Azure VPN Gateway resources cleanup completed")
+	return nil
+}
+
+// deleteVPNGateway deletes the VPN Gateway
+func (u *UnInstaller) deleteVPNGateway(ctx context.Context, resourceGroupName string) error {
+	// Check if VPN Gateway exists before trying to delete
+	gateway, err := u.vgwClient.Get(ctx, resourceGroupName, DefaultVPNGatewayName, nil)
+	if err != nil {
+		// If gateway doesn't exist, consider it already deleted
+		u.logger.Infof("VPN Gateway %s not found, may already be deleted", DefaultVPNGatewayName)
+		return nil
+	}
+
+	if gateway.Properties == nil || gateway.Properties.ProvisioningState == nil {
+		u.logger.Warn("VPN Gateway found but has incomplete properties")
+		return nil
+	}
+
+	u.logger.Infof("Found VPN Gateway %s in state: %s", DefaultVPNGatewayName, *gateway.Properties.ProvisioningState)
+
+	poller, err := u.vgwClient.BeginDelete(ctx, resourceGroupName, DefaultVPNGatewayName, nil)
 	if err != nil {
 		return fmt.Errorf("failed to start VPN Gateway deletion: %w", err)
 	}
@@ -243,6 +365,53 @@ func (u *UnInstaller) cleanupAzureResources(ctx context.Context) error {
 		return fmt.Errorf("VPN Gateway deletion failed: %w", err)
 	}
 
-	u.logger.Info("VPN Gateway successfully deleted from Azure")
+	return nil
+}
+
+// deletePublicIP deletes the Public IP used by VPN Gateway
+func (u *UnInstaller) deletePublicIP(ctx context.Context, resourceGroupName string) error {
+	// Check if Public IP exists before trying to delete
+	_, err := u.publicIPClient.Get(ctx, resourceGroupName, GatewayPublicIPName, nil)
+	if err != nil {
+		// If Public IP doesn't exist, consider it already deleted
+		u.logger.Infof("Public IP %s not found, may already be deleted", GatewayPublicIPName)
+		return nil
+	}
+
+	poller, err := u.publicIPClient.BeginDelete(ctx, resourceGroupName, GatewayPublicIPName, nil)
+	if err != nil {
+		return fmt.Errorf("failed to start Public IP deletion: %w", err)
+	}
+
+	// Wait for deletion to complete
+	_, err = poller.PollUntilDone(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("public IP deletion failed: %w", err)
+	}
+
+	return nil
+}
+
+// deleteGatewaySubnet deletes the GatewaySubnet
+func (u *UnInstaller) deleteGatewaySubnet(ctx context.Context, resourceGroupName, vnetName string) error {
+	// Check if GatewaySubnet exists before trying to delete
+	_, err := u.subnetsClient.Get(ctx, resourceGroupName, vnetName, GatewaySubnetName, nil)
+	if err != nil {
+		// If subnet doesn't exist, consider it already deleted
+		u.logger.Infof("GatewaySubnet %s not found, may already be deleted", GatewaySubnetName)
+		return nil
+	}
+
+	poller, err := u.subnetsClient.BeginDelete(ctx, resourceGroupName, vnetName, GatewaySubnetName, nil)
+	if err != nil {
+		return fmt.Errorf("failed to start GatewaySubnet deletion: %w", err)
+	}
+
+	// Wait for deletion to complete
+	_, err = poller.PollUntilDone(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("GatewaySubnet deletion failed: %w", err)
+	}
+
 	return nil
 }

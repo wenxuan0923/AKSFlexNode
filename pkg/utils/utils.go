@@ -17,7 +17,7 @@ import (
 
 // sudoCommandLists holds the command lists for sudo determination
 var (
-	alwaysNeedsSudo = []string{"apt", "apt-get", "dpkg", "systemctl", "mount", "umount", "modprobe", "sysctl", "azcmagent", "usermod", "kubectl"}
+	alwaysNeedsSudo = []string{"apt", "apt-get", "dpkg", "systemctl", "mount", "umount", "modprobe", "sysctl", "azcmagent", "usermod", "kubectl", "iptables", "ip"}
 	conditionalSudo = []string{"mkdir", "cp", "chmod", "chown", "mv", "tar", "rm", "bash", "install", "ln", "cat"}
 	systemPaths     = []string{"/etc/", "/usr/", "/var/", "/opt/", "/boot/", "/sys/"}
 )
@@ -70,7 +70,7 @@ func RunSystemCommand(name string, args ...string) error {
 // RunCommandWithOutput executes a command and returns output with sudo when needed
 func RunCommandWithOutput(name string, args ...string) (string, error) {
 	cmd := createCommand(name, args)
-	output, err := cmd.Output()
+	output, err := cmd.CombinedOutput()
 	return string(output), err
 }
 
@@ -431,4 +431,41 @@ func GetArc() (string, error) {
 		arch = "amd64"
 	}
 	return arch, nil
+}
+
+// GetVPNInterface returns the first available VPN interface (tun0, tun1, etc.)
+func GetVPNInterface() (string, error) {
+	const vpnInterfacePrefix = "tun"
+	const maxVPNInterfaces = 10
+
+	// Check for tun interfaces
+	for j := 0; j < maxVPNInterfaces; j++ {
+		iface := fmt.Sprintf("%s%d", vpnInterfacePrefix, j)
+		if _, err := os.Stat(fmt.Sprintf("/sys/class/net/%s", iface)); err == nil {
+			return iface, nil
+		}
+	}
+	return "", fmt.Errorf("no VPN interface found")
+}
+
+// GetVPNInterfaceIP returns the IP address of the given VPN interface
+func GetVPNInterfaceIP(iface string) (string, error) {
+	output, err := RunCommandWithOutput("ip", "addr", "show", iface)
+	if err != nil {
+		return "", fmt.Errorf("failed to get interface %s info: %w", iface, err)
+	}
+
+	// Parse IP address from output
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "inet ") && !strings.Contains(line, "inet6") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				ip := strings.Split(fields[1], "/")[0]
+				return ip, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("no IP address found for interface %s", iface)
 }

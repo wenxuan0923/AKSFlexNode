@@ -94,9 +94,15 @@ aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/cat /etc/systemd/system/kubelet.s
 aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/cat /etc/systemd/system/kubelet.service.d/*
 aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/cat /etc/kubernetes/*
 
-# Network operations for troubleshooting
+# Network operations for troubleshooting and VPN gateway management
 aks-flex-node ALL=(root) NOPASSWD:SETENV: /sbin/ip route
 aks-flex-node ALL=(root) NOPASSWD:SETENV: /sbin/ip addr
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /sbin/ip route add *
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /sbin/ip route del *
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /sbin/ip route delete *
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /sbin/ip route show *
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /usr/sbin/iptables *
+aks-flex-node ALL=(root) NOPASSWD:SETENV: /sbin/iptables *
 aks-flex-node ALL=(root) NOPASSWD:SETENV: /bin/netstat -rn
 
 # Read-only Kubernetes API check for node readiness (used by status collector)
