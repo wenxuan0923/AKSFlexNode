@@ -429,7 +429,7 @@ users:
 		i.config.Azure.TargetCluster.Name)
 
 	// Write kubeconfig file to the correct location for kubelet
-	if err := utils.WriteFileAtomicSystem(kubeletKubeconfigPath, []byte(kubeconfigContent), 0o600); err != nil {
+	if err := utils.WriteFileAtomicSystem(KubeletKubeconfigPath, []byte(kubeconfigContent), 0o600); err != nil {
 		return fmt.Errorf("failed to create kubeconfig file: %w", err)
 	}
 
