@@ -58,13 +58,13 @@ func (i *Installer) Execute(ctx context.Context) error {
 	}
 	i.logger.Info("CNI plugins installed successfully")
 
-	// Create cni configuration for edge node
-	i.logger.Info("Step 3: Creating CNI configuration")
-	// Always use bridge mode which is compatible with BYO Cilium
+	// Create bridge configuration for edge node
+	i.logger.Info("Step 3: Creating bridge configuration")
 	if err := i.createBridgeConfig(); err != nil {
 		i.logger.Errorf("Bridge configuration creation failed: %v", err)
 		return fmt.Errorf("failed to create bridge config: %w", err)
 	}
+	i.logger.Info("Bridge configuration created successfully")
 
 	i.logger.Info("CNI setup completed successfully")
 	return nil
@@ -169,6 +169,17 @@ func (i *Installer) installCNIPlugins() error {
 		return fmt.Errorf("failed to extract CNI plugins: %w", err)
 	}
 
+	// Fix ownership of extracted CNI plugins - critical for Cilium init containers
+	// Cilium init containers run as root and need to write to /opt/cni/bin
+	if err := utils.RunSystemCommand("chown", "-R", "root:root", DefaultCNIBinDir); err != nil {
+		logrus.Warnf("Failed to fix ownership of extracted CNI plugins: %v", err)
+	}
+
+	// Ensure proper permissions for extracted files
+	if err := utils.RunSystemCommand("chmod", "-R", "755", DefaultCNIBinDir); err != nil {
+		logrus.Warnf("Failed to fix permissions of extracted CNI plugins: %v", err)
+	}
+
 	logrus.Info("CNI plugins installed successfully")
 	return nil
 }
@@ -202,7 +213,8 @@ func getCNIVersion(cfg *config.Config) string {
 	return defaultCNIVersion
 }
 
-// createBridgeConfig creates the traditional bridge CNI configuration
+// CreateBridgeConfig creates bridge CNI configuration for edge nodes (compatible with BYO Cilium)
+// Uses 99-bridge.conf filename to ensure CNI solutions like Cilium can override with higher priority configs
 func (i *Installer) createBridgeConfig() error {
 	configPath := filepath.Join(DefaultCNIConfDir, bridgeConfigFile)
 
