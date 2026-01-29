@@ -15,7 +15,7 @@ import (
 	"io"
 	"math/big"
 	"net"
-	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -762,161 +762,80 @@ func validateZipPath(filePath, destDir string) error {
 }
 
 // downloadConfigFromURL downloads the VPN client configuration from the provided URL
-func (i *Installer) downloadConfigFromURL(url string) (string, error) {
+func (i *Installer) downloadConfigFromURL(urlStr string) (string, error) {
+	// Validate URL to prevent SSRF attacks
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		return "", fmt.Errorf("invalid URL: %w", err)
+	}
+
+	// Only allow HTTPS URLs for security
+	if parsedURL.Scheme != "https" {
+		return "", fmt.Errorf("only HTTPS URLs are allowed, got: %s", parsedURL.Scheme)
+	}
+
+	// Validate that this is likely an Azure/Microsoft VPN config URL
+	host := strings.ToLower(parsedURL.Host)
+	if !strings.Contains(host, "azure") && !strings.Contains(host, "microsoft") {
+		return "", fmt.Errorf("URL must be from Azure or Microsoft services: %s", parsedURL.Host)
+	}
+
 	// Create temporary file for ZIP download
 	tempZipFile, err := os.CreateTemp("", TempVPNZipPattern)
 	if err != nil {
 		return "", fmt.Errorf("failed to create temporary ZIP file: %w", err)
 	}
+	tempZipPath := tempZipFile.Name()
+	_ = tempZipFile.Close() // Close file handle so utils.DownloadFile can write to it
+
 	defer func() {
-		if err := utils.RunCleanupCommand(tempZipFile.Name()); err != nil {
-			i.logger.Warnf("Failed to clean up temp ZIP file %s: %v", tempZipFile.Name(), err)
+		if err := utils.RunCleanupCommand(tempZipPath); err != nil {
+			i.logger.Warnf("Failed to clean up temp ZIP file %s: %v", tempZipPath, err)
 		}
 	}()
-	defer func() { _ = tempZipFile.Close() }()
 
-	// Download the ZIP file using HTTP client
+	// Download the ZIP file using utils.DownloadFile
 	i.logger.Info("Downloading VPN configuration ZIP file...")
-	resp, err := http.Get(url)
-	if err != nil {
+	if err := utils.DownloadFile(urlStr, tempZipPath); err != nil {
 		return "", fmt.Errorf("failed to download VPN config ZIP: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("failed to download VPN config ZIP: HTTP %d", resp.StatusCode)
-	}
+	// Extract and return the OpenVPN configuration
+	return i.extractOpenVPNConfig(tempZipPath)
+}
 
-	// Copy response body to temporary file
-	_, err = io.Copy(tempZipFile, resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to save VPN config ZIP: %w", err)
-	}
-	_ = tempZipFile.Close()
-
-	// Create temporary directory for extraction
-	tempDir, err := os.MkdirTemp("", TempVPNExtractPrefix+"*")
-	if err != nil {
-		return "", fmt.Errorf("failed to create temporary directory: %w", err)
-	}
-	defer func() {
-		if err := utils.RunCleanupCommand(tempDir); err != nil {
-			i.logger.Warnf("Failed to clean up temp directory %s: %v", tempDir, err)
-		}
-	}()
-
-	// Extract the ZIP file using Go's archive/zip
-	i.logger.Info("Extracting VPN configuration ZIP file...")
-	reader, err := zip.OpenReader(tempZipFile.Name())
+// extractOpenVPNConfig extracts the OpenVPN configuration from a ZIP file
+func (i *Installer) extractOpenVPNConfig(zipPath string) (string, error) {
+	// Open the ZIP file
+	reader, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to open VPN config ZIP: %w", err)
 	}
 	defer func() { _ = reader.Close() }()
 
-	// Extract all files
+	// Look specifically for OpenVPN/vpnconfig.ovpn
 	for _, file := range reader.File {
-		// Validate file path to prevent ZIP slip vulnerability
-		if err := validateZipPath(file.Name, tempDir); err != nil {
-			return "", fmt.Errorf("invalid file path in ZIP archive: %w", err)
-		}
-
-		path := filepath.Join(tempDir, file.Name)
-
-		// Create directory if needed
-		if file.FileInfo().IsDir() {
-			_ = os.MkdirAll(path, file.FileInfo().Mode())
-			continue
-		}
-
-		// Create parent directories
-		if err := os.MkdirAll(filepath.Dir(path), ConfigDirPerm); err != nil {
-			return "", fmt.Errorf("failed to create directory for %s: %w", path, err)
-		}
-
-		// Extract file with size limits to prevent decompression bombs
-		fileReader, err := file.Open()
-		if err != nil {
-			return "", fmt.Errorf("failed to open file %s in ZIP: %w", file.Name, err)
-		}
-
-		// Add size limit of 10MB per file to prevent decompression bomb
-		const maxFileSize = 10 * 1024 * 1024 // 10MB
-		limitedReader := io.LimitReader(fileReader, maxFileSize)
-
-		targetFile, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, file.FileInfo().Mode())
-		if err != nil {
-			_ = fileReader.Close()
-			return "", fmt.Errorf("failed to create file %s: %w", path, err)
-		}
-
-		_, err = io.Copy(targetFile, limitedReader)
-		_ = fileReader.Close()
-		_ = targetFile.Close()
-
-		if err != nil {
-			return "", fmt.Errorf("failed to extract file %s: %w", file.Name, err)
-		}
-	}
-
-	// Find the OpenVPN configuration file in the extracted directory
-	var ovpnPath string
-	var configData []byte
-
-	// Try common paths for the OpenVPN config file
-	possiblePaths := []string{
-		filepath.Join(tempDir, OpenVPNConfigPath),
-		filepath.Join(tempDir, GenericVPNConfigPath),
-		filepath.Join(tempDir, VPNConfigFileName),
-	}
-
-	// Walk through the extracted directory to find .ovpn files
-	err = filepath.Walk(tempDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if strings.HasSuffix(strings.ToLower(info.Name()), ".ovpn") {
-			ovpnPath = path
-			i.logger.Infof("Found OpenVPN config file: %s", path)
-			return filepath.SkipDir // Stop walking once we find the file
-		}
-		return nil
-	})
-
-	if err != nil {
-		return "", fmt.Errorf("failed to search for OpenVPN config: %w", err)
-	}
-
-	// If we found an .ovpn file during the walk, read it
-	if ovpnPath != "" {
-		configData, err = os.ReadFile(ovpnPath)
-		if err != nil {
-			return "", fmt.Errorf("failed to read OpenVPN config from %s: %w", ovpnPath, err)
-		}
-	} else {
-		// If no .ovpn file found, try the traditional paths
-		for _, path := range possiblePaths {
-			configData, err = os.ReadFile(path)
-			if err == nil {
-				ovpnPath = path
-				i.logger.Infof("Found OpenVPN config at: %s", path)
-				break
+		if file.Name == "OpenVPN/vpnconfig.ovpn" {
+			// Extract and read the config file with size limits
+			fileReader, err := file.Open()
+			if err != nil {
+				return "", fmt.Errorf("failed to open OpenVPN config: %w", err)
 			}
-		}
+			defer func() { _ = fileReader.Close() }()
 
-		if ovpnPath == "" {
-			// List the contents of the extracted directory for debugging
-			i.logger.Error("OpenVPN config file not found. Listing extracted contents:")
-			_ = filepath.Walk(tempDir, func(path string, info os.FileInfo, err error) error {
-				if err == nil {
-					relPath, _ := filepath.Rel(tempDir, path)
-					i.logger.Errorf("  %s", relPath)
-				}
-				return nil
-			})
-			return "", fmt.Errorf("OpenVPN configuration file not found in extracted ZIP")
+			// Add size limit of 1MB (config files are typically small)
+			const maxFileSize = 1024 * 1024 // 1MB
+			limitedReader := io.LimitReader(fileReader, maxFileSize)
+
+			configData, err := io.ReadAll(limitedReader)
+			if err != nil {
+				return "", fmt.Errorf("failed to read OpenVPN config: %w", err)
+			}
+
+			i.logger.Info("VPN configuration extracted successfully")
+			return string(configData), nil
 		}
 	}
 
-	i.logger.Info("VPN configuration extracted successfully")
-	return string(configData), nil
+	return "", fmt.Errorf("OpenVPN/vpnconfig.ovpn not found in ZIP")
 }
