@@ -736,31 +736,6 @@ func (i *Installer) downloadVPNClientConfig(ctx context.Context, gatewayName, re
 
 }
 
-// validateZipPath validates that a ZIP file entry path is safe to extract
-func validateZipPath(filePath, destDir string) error {
-	// Clean the file path to resolve any ".." or "." elements
-	cleanPath := filepath.Clean(filePath)
-
-	// Check for absolute paths
-	if filepath.IsAbs(cleanPath) {
-		return fmt.Errorf("absolute path not allowed: %s", filePath)
-	}
-
-	// Check for path traversal attempts
-	if strings.Contains(cleanPath, "..") {
-		return fmt.Errorf("path traversal attempt detected: %s", filePath)
-	}
-
-	// Ensure the resolved path is within the destination directory
-	fullPath := filepath.Join(destDir, cleanPath)
-	if !strings.HasPrefix(fullPath, filepath.Clean(destDir)+string(os.PathSeparator)) &&
-		fullPath != filepath.Clean(destDir) {
-		return fmt.Errorf("path escapes destination directory: %s", filePath)
-	}
-
-	return nil
-}
-
 // downloadConfigFromURL downloads the VPN client configuration from the provided URL
 func (i *Installer) downloadConfigFromURL(urlStr string) (string, error) {
 	// Validate URL to prevent SSRF attacks
