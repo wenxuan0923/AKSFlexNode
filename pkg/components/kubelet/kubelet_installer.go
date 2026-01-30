@@ -200,7 +200,7 @@ func (i *Installer) createKubeletDefaultsFile() error {
 	kubeletDefaults := fmt.Sprintf(`KUBELET_NODE_LABELS="%s"
 KUBELET_CONFIG_FILE_FLAGS=""
 KUBELET_FLAGS="\
-	--v=%d \
+  --v=%d \
   --address=0.0.0.0 \
   --anonymous-auth=false \
   --authentication-token-webhook=true \
@@ -208,6 +208,8 @@ KUBELET_FLAGS="\
   --cgroup-driver=systemd \
   --cgroups-per-qos=true \
   --enforce-node-allocatable=pods \
+  --cluster-dns=%s \
+  --cluster-domain=cluster.local \
   --event-qps=0  \
   --eviction-hard=%s  \
   --kube-reserved=%s  \
@@ -225,6 +227,7 @@ KUBELET_FLAGS="\
   "`,
 		strings.Join(labels, ","),
 		i.config.Node.Kubelet.Verbosity,
+		i.config.Node.Kubelet.DNSServiceIP,
 		mapToEvictionThresholds(i.config.Node.Kubelet.EvictionHard, ","),
 		mapToKeyValuePairs(i.config.Node.Kubelet.KubeReserved, ","),
 		i.config.Node.Kubelet.ImageGCHighThreshold,
@@ -411,7 +414,7 @@ users:
 		i.config.Azure.TargetCluster.Name)
 
 	// Write kubeconfig file to the correct location for kubelet
-	if err := utils.WriteFileAtomicSystem(kubeletKubeconfigPath, []byte(kubeconfigContent), 0o600); err != nil {
+	if err := utils.WriteFileAtomicSystem(KubeletKubeconfigPath, []byte(kubeconfigContent), 0o600); err != nil {
 		return fmt.Errorf("failed to create kubeconfig file: %w", err)
 	}
 

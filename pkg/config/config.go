@@ -151,6 +151,12 @@ func (c *Config) setNodeDefaults() {
 	if c.Node.Kubelet.ImageGCLowThreshold == 0 {
 		c.Node.Kubelet.ImageGCLowThreshold = 80 // stop GC when disk usage < 80%
 	}
+	// Set default DNS service IP if not provided
+	// Note: This default assumes the standard AKS service CIDR (10.0.0.0/16)
+	// Clusters with custom service CIDRs should specify this value explicitly
+	if c.Node.Kubelet.DNSServiceIP == "" {
+		c.Node.Kubelet.DNSServiceIP = "10.0.0.10"
+	}
 	// Initialize default kubelet resource reservations if not provided
 	if c.Node.Kubelet.KubeReserved == nil {
 		c.Node.Kubelet.KubeReserved = make(map[string]string)
