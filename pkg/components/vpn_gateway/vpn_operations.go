@@ -749,10 +749,10 @@ func (i *Installer) downloadConfigFromURL(urlStr string) (string, error) {
 		return "", fmt.Errorf("only HTTPS URLs are allowed, got: %s", parsedURL.Scheme)
 	}
 
-	// Validate that this is likely an Azure/Microsoft VPN config URL
+	// Validate that this is an Azure Blob Storage URL for VPN configuration
 	host := strings.ToLower(parsedURL.Host)
-	if !strings.Contains(host, "azure") && !strings.Contains(host, "microsoft") {
-		return "", fmt.Errorf("URL must be from Azure or Microsoft services: %s", parsedURL.Host)
+	if !strings.HasSuffix(host, ".blob.core.windows.net") {
+		return "", fmt.Errorf("URL must be from Azure Blob Storage: %s", parsedURL.Host)
 	}
 
 	// Create temporary file for ZIP download
