@@ -289,7 +289,7 @@ func (u *UnInstaller) removeArcAgentBinary(ctx context.Context) error {
 	// Verify removal
 	if isArcAgentInstalled() {
 		u.logger.Warning("azcmagent command still available after cleanup - manual removal may be required")
-		return fmt.Errorf("Arc agent binary still present after cleanup")
+		return fmt.Errorf("arc agent binary still present after cleanup")
 	}
 
 	u.logger.Info("Azure Arc agent binaries and configuration removed successfully")

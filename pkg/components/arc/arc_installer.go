@@ -65,7 +65,11 @@ func (i *Installer) installArcAgentBinary(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create temp directory: %w", err)
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() {
+		if rmErr := os.RemoveAll(tempDir); rmErr != nil {
+			i.logger.Debug("Failed to clean up temp directory", "dir", tempDir, "error", rmErr)
+		}
+	}()
 
 	// Download Arc agent installation script
 	installScriptPath := filepath.Join(tempDir, "install_linux_azcmagent.sh")
