@@ -58,13 +58,13 @@ func (i *Installer) Execute(ctx context.Context) error {
 	}
 	i.logger.Info("CNI plugins installed successfully")
 
-	// Create bridge configuration for edge node
-	i.logger.Info("Step 3: Creating bridge configuration")
+	// Create cni configuration for edge node
+	i.logger.Info("Step 3: Creating CNI configuration")
+	// Always use bridge mode which is compatible with BYO Cilium
 	if err := i.createBridgeConfig(); err != nil {
 		i.logger.Errorf("Bridge configuration creation failed: %v", err)
 		return fmt.Errorf("failed to create bridge config: %w", err)
 	}
-	i.logger.Info("Bridge configuration created successfully")
 
 	i.logger.Info("CNI setup completed successfully")
 	return nil
@@ -87,13 +87,6 @@ func (i *Installer) IsCompleted(ctx context.Context) bool {
 			i.logger.Debugf("CNI plugin not found: %s", plugin)
 			return false
 		}
-	}
-
-	// Validate Step 3: Bridge configuration
-	configPath := filepath.Join(DefaultCNIConfDir, bridgeConfigFile)
-	if !utils.FileExistsAndValid(configPath) {
-		i.logger.Debug("Bridge configuration file not found")
-		return false
 	}
 
 	i.logger.Debug("CNI setup validation passed - all components properly configured")
